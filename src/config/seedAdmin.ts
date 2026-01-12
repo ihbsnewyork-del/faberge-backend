@@ -1,4 +1,4 @@
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { ManagerModel } from "../modules/manager/manager.model";
 import dotenv from "dotenv";
 

@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { ManagerModel } from "./manager.model";
 import { managerLoginSchema, managerProfileSchema } from "./manager.validation";
 import jwt from "jsonwebtoken";
