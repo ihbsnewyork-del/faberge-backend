@@ -1,0 +1,23 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const manager_controller_1 = require("./manager.controller");
+const profilePhotoUpload_1 = require("../../uploads/profilePhotoUpload");
+const adminMiddleware_1 = require("../../middlewares/adminMiddleware");
+const adminOrManagerMiddleware_1 = require("../../middlewares/adminOrManagerMiddleware");
+const managerRouter = express_1.default.Router();
+managerRouter.post("/register", adminMiddleware_1.authenticateAdmin, profilePhotoUpload_1.photoUpload.single("managerProfileImage"), manager_controller_1.registerManager);
+managerRouter.post("/login", manager_controller_1.loginManger);
+managerRouter.get("/me", adminOrManagerMiddleware_1.authenticateAdminOrManager, manager_controller_1.getMyProfile);
+managerRouter.patch("/update-profile", adminOrManagerMiddleware_1.authenticateAdminOrManager, profilePhotoUpload_1.photoUpload.single("managerProfileImage"), manager_controller_1.updateProfile);
+managerRouter.post("/forgot-password", manager_controller_1.sendOtp);
+managerRouter.post("/verify-otp", manager_controller_1.verifyOtp);
+managerRouter.post("/set-new-password", manager_controller_1.setNewPassword);
+managerRouter.post("/change-password", adminOrManagerMiddleware_1.authenticateAdminOrManager, manager_controller_1.changePassword);
+managerRouter.get("/get-all-managers", adminMiddleware_1.authenticateAdmin, manager_controller_1.getAllManagers);
+managerRouter.patch("/block-unblock/:managerId", adminMiddleware_1.authenticateAdmin, manager_controller_1.toggleBlockManager);
+managerRouter.delete("/manager-delete/:id", adminMiddleware_1.authenticateAdmin, manager_controller_1.deleteManager);
+exports.default = managerRouter;

@@ -43,6 +43,10 @@ app.use(
 
 app.use(express.json());
 
+  app.get("/", (_req, res) => {
+    res.send("Farberge server is running perfectly!");
+  });
+
 app.use("/picture", express.static("picture"));
 
 app.use("/customer", customerRouter);
