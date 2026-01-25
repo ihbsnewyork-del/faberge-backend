@@ -1,0 +1,31 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.customerRouter = exports.customerOrWorkerRouter = void 0;
+const express_1 = __importDefault(require("express"));
+const customer_controller_1 = require("./customer.controller");
+const profilePhotoUpload_1 = require("../../uploads/profilePhotoUpload");
+const customerOrWorkerMiddleware_1 = require("../../middlewares/customerOrWorkerMiddleware");
+const adminOrManagerMiddleware_1 = require("../../middlewares/adminOrManagerMiddleware");
+const customerRouter = express_1.default.Router();
+exports.customerRouter = customerRouter;
+const customerOrWorkerRouter = express_1.default.Router();
+exports.customerOrWorkerRouter = customerOrWorkerRouter;
+customerRouter.post("/register", customer_controller_1.createCustomer);
+customerRouter.patch("/set-password", customer_controller_1.setPassword);
+customerRouter.patch("/upload-picture", profilePhotoUpload_1.photoUpload.single("customerProfileImage"), customer_controller_1.uploadProfilePicture);
+customerRouter.get("/get-all-customers", adminOrManagerMiddleware_1.authenticateAdminOrManager, customer_controller_1.getAllCustomers);
+customerRouter.get("/get-one-customer/:id", adminOrManagerMiddleware_1.authenticateAdminOrManager, customer_controller_1.getOneCustomer);
+// common api for customer and worker
+customerOrWorkerRouter.post("/login", customer_controller_1.loginCustomerOrWorker);
+customerOrWorkerRouter.post("/forgot-password", customer_controller_1.sendOtp);
+customerOrWorkerRouter.post("/verify-otp", customer_controller_1.verifyOtp);
+customerOrWorkerRouter.post("/set-new-password", customer_controller_1.setNewPassword);
+customerOrWorkerRouter.get("/me", customerOrWorkerMiddleware_1.customerOrWorkerMiddleware, customer_controller_1.getMyProfile);
+customerOrWorkerRouter.patch("/update-profile", customerOrWorkerMiddleware_1.customerOrWorkerMiddleware, profilePhotoUpload_1.photoUpload.single("customerProfileImage"), customer_controller_1.updateProfile);
+customerOrWorkerRouter.patch("/update-block-unblock/:userId", adminOrManagerMiddleware_1.authenticateAdminOrManager, customer_controller_1.toggleBlockUser);
+customerRouter.delete("/customer-delete/:id", adminOrManagerMiddleware_1.authenticateAdminOrManager, customer_controller_1.toggleCustomerDelete);
+customerRouter.patch("/update-profile/:id", adminOrManagerMiddleware_1.authenticateAdminOrManager, profilePhotoUpload_1.photoUpload.single("customerProfileImage"), customer_controller_1.superAdminUpdateCustomer);
+customerRouter.patch("/worker/:id", adminOrManagerMiddleware_1.authenticateAdminOrManager, profilePhotoUpload_1.photoUpload.single("customerProfileImage"), customer_controller_1.superAdminUpdateWorker);
