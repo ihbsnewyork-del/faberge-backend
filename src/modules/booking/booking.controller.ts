@@ -63,8 +63,8 @@ export const initializePayment = async (req: any, res: Response) => {
     const { bookingId } = req.body;
     const customerId = req.user.userId;
     const currency = "usd";
-    const success_url = "https://faberge1-webiste.vercel.app/success";
-    const cancel_url = "https://faberge1-webiste.vercel.app/cancel";
+    const success_url = "https://inhomebeautyservices.com/success";
+    const cancel_url = "https://inhomebeautyservices.com/cancel";
 
     const customer = await CustomerModel.findById(customerId);
     if (!customer) {
