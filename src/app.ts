@@ -23,7 +23,7 @@ const app = express();
 app.post(
   "/api/webhook/stripe",
   express.raw({ type: "application/json" }),
-  handleStripeWebhook
+  handleStripeWebhook,
 );
 app.use(
   cors({
@@ -38,7 +38,7 @@ app.use(
       callback(null, origin);
     },
     credentials: true,
-  })
+  }),
 );
 
 app.use(express.json());
@@ -67,7 +67,7 @@ app.use(
   privacyPolicyRouter,
   termsAndConditionsRouter,
   aboutUsRouter,
-  contactUsRouter
+  contactUsRouter,
 );
 
 export default app;
