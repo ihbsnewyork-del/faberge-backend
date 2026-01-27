@@ -5,3 +5,4 @@ picture/
 cert.pem
 key.pem
 faberge.pem
+dist/
