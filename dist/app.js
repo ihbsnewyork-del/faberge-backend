@@ -67,6 +67,9 @@ app.use((0, cors_1.default)({
     credentials: true,
 }));
 app.use(express_1.default.json());
+app.get("/", (_req, res) => {
+    res.send("Farberge server is running perfectly!");
+});
 app.use("/picture", express_1.default.static("picture"));
 app.use("/customer", customer_routes_1.customerRouter);
 app.use("/customer-or-worker", customer_routes_1.customerOrWorkerRouter);
