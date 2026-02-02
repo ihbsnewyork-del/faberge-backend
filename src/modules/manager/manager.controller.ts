@@ -255,6 +255,7 @@ export const toggleBlockManager = async (req: Request, res: Response) => {
 export const sendOtp = async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
+    console.log(email)
 
     const user = await ManagerModel.findOne({ email });
     if (!user) {
