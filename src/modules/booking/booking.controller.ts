@@ -47,7 +47,7 @@ const calculateTotalPrice = async (booking: any) => {
     if (srv.subcategories && srv.subcategories.length > 0) {
       for (const subId of srv.subcategories) {
         const sub = serviceDoc.subcategory?.find(
-          (s: any) => s._id.toString() === subId.toString()
+          (s: any) => s._id.toString() === subId.toString(),
         );
         if (sub) {
           total += sub.subcategoryPrice; // ← Changed from sub.price
@@ -94,6 +94,8 @@ export const initializePayment = async (req: any, res: Response) => {
       workerId: workerId.toString(),
     };
 
+    console.log(metadata);
+
     const session = await stripe.checkout.sessions.create({
       customer_email: customer.email,
       payment_method_types: ["card"],
@@ -123,7 +125,7 @@ export const initializePayment = async (req: any, res: Response) => {
 
 export const handleStripeWebhook = async (req: Request, res: Response) => {
   console.log(
-    "===============================================================first"
+    "===============================================================first",
   );
   const sig = req.headers["stripe-signature"] as string;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
@@ -181,7 +183,7 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
         status: "booked",
         paymentExpiresAt: null,
       },
-      { new: true }
+      { new: true },
     );
 
     if (!booking) {
@@ -197,7 +199,7 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
 
     if (timeSlotDoc) {
       const slot = timeSlotDoc.slots.find(
-        (s) => s.startTime === booking.startTime
+        (s) => s.startTime === booking.startTime,
       );
 
       if (slot) {
@@ -283,7 +285,7 @@ export const cleanupExpiredBookings = async () => {
 
       if (timeSlotDoc) {
         const slotIndex = timeSlotDoc.slots.findIndex(
-          (s) => s.startTime === booking.startTime
+          (s) => s.startTime === booking.startTime,
         );
 
         if (slotIndex !== -1) {
@@ -310,7 +312,7 @@ export const cleanupExpiredBookings = async () => {
     }
 
     console.log(
-      `✅ Cleanup completed: ${expiredBookings.length} bookings expired`
+      `✅ Cleanup completed: ${expiredBookings.length} bookings expired`,
     );
   } catch (error: any) {
     console.error("❌ Error cleaning up expired bookings:", error.message);
@@ -365,7 +367,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     }
 
     const workerServiceIds = worker.services.map((s: any) =>
-      s.service.toString()
+      s.service.toString(),
     );
 
     for (const srv of services) {
@@ -396,7 +398,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     const convertedStartTime = convertTo24Hour(startTime);
 
     const slotIndex = timeSlotDoc.slots.findIndex(
-      (s) => s.startTime === convertedStartTime
+      (s) => s.startTime === convertedStartTime,
     );
 
     if (slotIndex === -1) {
@@ -431,7 +433,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
 
     if (slot.heldUntil && now < slot.heldUntil) {
       const remainingMinutes = Math.ceil(
-        (slot.heldUntil.getTime() - now.getTime()) / (1000 * 60)
+        (slot.heldUntil.getTime() - now.getTime()) / (1000 * 60),
       );
 
       res.status(400).json({
@@ -692,7 +694,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
         } else {
           const totalSlots = timeSlot.slots.length;
           const bookedSlots = timeSlot.slots.filter(
-            (s: any) => s.isBooked
+            (s: any) => s.isBooked,
           ).length;
 
           if (bookedSlots === totalSlots) {
@@ -713,7 +715,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
         totalBookings: bookingCount,
         availableSlots: timeSlot
           ? timeSlot.slots.filter(
-              (s: any) => s.isAvailable && !s.isBooked && !s.isBlocked
+              (s: any) => s.isAvailable && !s.isBooked && !s.isBlocked,
             ).length
           : generateDefaultSlots().length,
       });
@@ -753,23 +755,32 @@ export const getCustomerBookings = async (req: any, res: Response) => {
 
     const month = parseInt(req.query.month);
     const year = parseInt(req.query.year);
-    const status = req.query.status; // optional: "booked" | "completed" | "cancelled"
-    const filterType = req.query.filter; // optional: "upcoming" | "completed"
+    const status = req.query.status; // "booked" | "completed"
+    const filterType = req.query.filter; // "upcoming" | "completed"
 
-    const query: any = { customer: customerId };
+    const query: any = {
+      customer: customerId,
+    };
 
+    // ✅ Default: only booked & completed
+    if (!status) {
+      query.status = { $in: ["booked", "completed"] };
+    } else {
+      // ✅ Explicit filter
+      query.status = status;
+    }
+
+    // Date filter (month/year)
     if (month && year) {
       const startDate = new Date(year, month - 1, 1);
       const endDate = new Date(year, month, 0, 23, 59, 59);
       query.date = { $gte: startDate, $lte: endDate };
     }
 
-    if (status) {
-      query.status = status;
-    }
-
+    // Upcoming / completed based on date (optional)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
     if (filterType === "upcoming") {
       query.date = { ...query.date, $gte: today };
     } else if (filterType === "completed") {
@@ -800,6 +811,20 @@ export const getCustomerBookings = async (req: any, res: Response) => {
       acc[day].push(booking);
       return acc;
     }, {});
+
+    console.log("====================");
+    console.log({
+      message: "Customer bookings fetched successfully",
+      month,
+      year,
+      data: groupedByDate,
+      pagination: {
+        total: total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
 
     res.status(200).json({
       message: "Customer bookings fetched successfully",
@@ -840,38 +865,40 @@ export const getWorkerPopularity = async (req: Request, res: Response) => {
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const popularity = await BookingModel.aggregate([
-      {
-        $match: {
-          date: { $gte: startDate, $lte: endDate },
-        },
-      },
-      {
-        $group: {
-          _id: "$worker",
-          totalBookings: { $sum: 1 },
-        },
-      },
+    const popularity = await WorkerModel.aggregate([
       {
         $lookup: {
-          from: "workers",
-          localField: "_id",
-          foreignField: "_id",
-          as: "worker",
+          from: "bookings",
+          let: { workerId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$worker", "$$workerId"] },
+                    { $eq: ["$status", "booked"] },
+                    { $gte: ["$date", startDate] },
+                    { $lte: ["$date", endDate] },
+                  ],
+                },
+              },
+            },
+          ],
+          as: "bookings",
         },
       },
-      { $unwind: "$worker" },
-
+      {
+        $addFields: {
+          totalBookings: { $size: "$bookings" },
+        },
+      },
       {
         $project: {
           _id: 0,
-          workerName: {
-            $concat: ["$worker.firstName", " ", "$worker.lastName"],
-          },
+          workerName: { $concat: ["$firstName", " ", "$lastName"] },
           totalBookings: 1,
         },
       },
-
       { $sort: { totalBookings: -1 } },
     ]);
 
@@ -909,6 +936,7 @@ export const getBookingTrends = async (req: Request, res: Response) => {
       {
         $match: {
           date: { $gte: startDate, $lte: endDate },
+          status: "booked", 
         },
       },
       {
@@ -966,7 +994,11 @@ export const getAllBookings = async (req: Request, res: Response) => {
     const { page, limit, status, filterType } = req.query;
     const filter: any = {};
 
-    if (status) filter.status = status;
+    if (!status) {
+      filter.status = { $in: ["booked", "completed"] };
+    } else {
+      filter.status = status;
+    }
 
     // ================== TIME BASED FILTER ==================
     const now = new Date();
@@ -1071,8 +1103,8 @@ export const getAllBookings = async (req: Request, res: Response) => {
         const selectedSubcategories = (srv.subcategories || [])
           .map((subId: any) =>
             (serviceDoc.subcategory || []).find(
-              (sub: any) => sub._id.toString() === subId.toString()
-            )
+              (sub: any) => sub._id.toString() === subId.toString(),
+            ),
           )
           .filter(Boolean);
 
@@ -1429,7 +1461,7 @@ export const deleteTransactionByAdmin = async (req: Request, res: Response) => {
 
 export const deleteNotificationByAdmin = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { notificationId } = req.params;

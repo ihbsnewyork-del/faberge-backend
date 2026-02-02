@@ -55,7 +55,7 @@ export const updateService = async (req: Request, res: Response) => {
     const updatedService = await ServiceModel.findByIdAndUpdate(
       id,
       validation.data,
-      { new: true }
+      { new: true },
     );
 
     if (!updatedService) {
@@ -178,33 +178,39 @@ export const getServicePopularity = async (req: any, res: Response) => {
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const result = await BookingModel.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ["booked", "completed"] },
-        },
-      },
-      { $unwind: "$services" },
-      {
-        $group: {
-          _id: "$services.service",
-          totalBookings: { $sum: 1 },
-        },
-      },
+    const result = await ServiceModel.aggregate([
       {
         $lookup: {
-          from: "services",
-          localField: "_id",
-          foreignField: "_id",
-          as: "service",
+          from: "bookings",
+          let: { serviceId: "$_id" },
+          pipeline: [
+            { $unwind: "$services" },
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$services.service", "$$serviceId"] },
+                    { $in: ["$status", ["booked", "completed"]] },
+                    { $gte: ["$createdAt", startDate] },
+                    { $lte: ["$createdAt", endDate] },
+                  ],
+                },
+              },
+            },
+          ],
+          as: "bookings",
         },
       },
-      { $unwind: "$service" },
+      {
+        $addFields: {
+          totalBookings: { $size: "$bookings" },
+        },
+      },
       {
         $project: {
-          serviceId: "$service._id",
-          serviceName: "$service.serviceName",
+          _id: 0,
+          serviceId: "$_id",
+          serviceName: 1,
           totalBookings: 1,
         },
       },
@@ -230,7 +236,7 @@ export const getServicePopularity = async (req: any, res: Response) => {
 
 export const createOrUpdateServiceTime = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { startTime, endTime } = req.body;
@@ -249,7 +255,7 @@ export const createOrUpdateServiceTime = async (
       {
         new: true,
         upsert: true,
-      }
+      },
     );
 
     res.status(200).json({

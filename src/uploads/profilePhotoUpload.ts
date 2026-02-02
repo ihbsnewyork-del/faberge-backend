@@ -2,10 +2,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 
-const uploadFolder = path.join(
-  __dirname,
-  "../../picture/profile_image"
-);
+const uploadFolder = path.join(process.cwd(), "picture/profile_image");
 
 if (!fs.existsSync(uploadFolder)) {
   fs.mkdirSync(uploadFolder, { recursive: true });
@@ -24,9 +21,8 @@ const storage = multer.diskStorage({
 export const photoUpload = multer({
   storage,
   fileFilter: function (req, file, cb) {
-    const allowedTypes = ["image/jpeg", "image/png", "image/jpg"];
-    if (!allowedTypes.includes(file.mimetype)) {
-      return cb(new Error("Only jpeg, jpg and png files are allowed"));
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed"));
     }
     cb(null, true);
   },
