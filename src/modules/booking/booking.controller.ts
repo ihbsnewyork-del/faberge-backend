@@ -699,8 +699,10 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
 
           if (bookedSlots === totalSlots) {
             color = "bg-gray-400"; // fully booked
-          } else {
+          } else if (bookedSlots > 0) {
             color = "bg-green-500"; // available
+          } else {
+            color = "bg-white";
           }
         }
       } else {
@@ -936,7 +938,7 @@ export const getBookingTrends = async (req: Request, res: Response) => {
       {
         $match: {
           date: { $gte: startDate, $lte: endDate },
-          status: "booked", 
+          status: "booked",
         },
       },
       {
