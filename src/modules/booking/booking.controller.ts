@@ -124,43 +124,64 @@ export const initializePayment = async (req: any, res: Response) => {
 };
 
 export const handleStripeWebhook = async (req: Request, res: Response) => {
-  console.log(
-    "===============================================================first",
-  );
-  const sig = req.headers["stripe-signature"] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+  console.log("🔥 WEBHOOK HIT", new Date().toISOString());
+
+  const sig = req.headers["stripe-signature"];
+
+  if (!sig) {
+    console.error("❌ No stripe-signature header found");
+    res.status(400).send("No signature");
+    return;
+  }
+
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    console.error("❌ STRIPE_WEBHOOK_SECRET not set in environment");
+    res.status(500).send("Webhook secret not configured");
+    return;
+  }
 
   let event: Stripe.Event;
 
   try {
+    // req.body should be a Buffer when using express.raw()
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+
+    console.log("✅ Webhook signature verified:", event.type);
   } catch (err: any) {
-    console.error("Webhook signature verification failed:", err.message);
+    console.error("❌ Webhook signature verification failed:", err.message);
     res.status(400).send(`Webhook Error: ${err.message}`);
     return;
   }
 
-  switch (event.type) {
-    case "checkout.session.completed":
-      const session = event.data.object as Stripe.Checkout.Session;
-      await handleSuccessfulPayment(session);
-      break;
+  try {
+    switch (event.type) {
+      case "checkout.session.completed":
+        const session = event.data.object as Stripe.Checkout.Session;
+        await handleSuccessfulPayment(session);
+        break;
 
-    case "checkout.session.async_payment_succeeded":
-      const asyncSession = event.data.object as Stripe.Checkout.Session;
-      await handleSuccessfulPayment(asyncSession);
-      break;
+      case "checkout.session.async_payment_succeeded":
+        const asyncSession = event.data.object as Stripe.Checkout.Session;
+        await handleSuccessfulPayment(asyncSession);
+        break;
 
-    case "checkout.session.async_payment_failed":
-      const failedSession = event.data.object as Stripe.Checkout.Session;
-      await handleFailedPayment(failedSession);
-      break;
+      case "checkout.session.async_payment_failed":
+        const failedSession = event.data.object as Stripe.Checkout.Session;
+        await handleFailedPayment(failedSession);
+        break;
 
-    default:
-      console.log(`Unhandled event type: ${event.type}`);
+      default:
+        console.log(`ℹ️ Unhandled event type: ${event.type}`);
+    }
+
+    res.json({ received: true });
+  } catch (error: any) {
+    console.error("❌ Error processing webhook event:", error.message);
+    // Still return 200 to acknowledge receipt
+    res.status(200).json({ received: true, error: error.message });
   }
-
-  res.json({ received: true });
 };
 
 const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
@@ -168,8 +189,12 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
     const { bookingId, customerId, workerId } = session.metadata || {};
 
     if (!bookingId) {
-      console.error("❌ No bookingId in webhook metadata");
-      return;
+      console.error(
+        "❌ No bookingId in webhook metadata - this might be a test event",
+      );
+      console.log("Session ID:", session.id);
+      console.log("Metadata:", session.metadata);
+      return; // Exit gracefully for test events
     }
 
     console.log("✅ Payment successful for booking:", bookingId);
@@ -203,14 +228,16 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
       );
 
       if (slot) {
-        slot.isBooked = true; // Now permanently booked
+        slot.isBooked = true;
         slot.isAvailable = false;
         slot.heldBy = null;
         slot.heldUntil = null;
         await timeSlotDoc.save();
+        console.log("✅ Time slot confirmed as booked");
       }
     }
 
+    // Send confirmation emails
     const customer = await CustomerModel.findById(customerId);
     if (!customer) {
       console.error("❌ Customer not found:", customerId);
@@ -225,29 +252,358 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
     });
 
+    // Email to worker
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+      from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
       to: worker.email,
-      subject: "A booking has been confirmed",
-      text: `Your booking has been confirmed. Booking ID: ${bookingId}. Customer: ${
-        customer.firstName
-      } ${customer.lastName}. Date: ${booking.date}. Time: ${
-        booking.startTime
-      }. Location: ${customer.address}, ${customer.city}, ${customer.state} ${
-        customer.zipCode ? ", " + customer.zipCode : ""
-      }.`,
+      subject: "🔔 New Booking Received",
+      html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          line-height: 1.6;
+          color: #333;
+          margin: 0;
+          padding: 0;
+          background-color: #f4f4f4;
+        }
+        .container {
+          max-width: 600px;
+          margin: 20px auto;
+          background-color: #ffffff;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: #ffffff;
+          padding: 30px;
+          text-align: center;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 24px;
+          font-weight: 600;
+        }
+        .content {
+          padding: 30px;
+        }
+        .booking-card {
+          background-color: #f8f9fa;
+          border-left: 4px solid #667eea;
+          padding: 20px;
+          margin: 20px 0;
+          border-radius: 4px;
+        }
+        .info-row {
+          display: flex;
+          padding: 8px 0;
+          border-bottom: 1px solid #e9ecef;
+        }
+        .info-row:last-child {
+          border-bottom: none;
+        }
+        .info-label {
+          font-weight: 600;
+          color: #495057;
+          min-width: 120px;
+        }
+        .info-value {
+          color: #212529;
+        }
+        .highlight {
+          background-color: #fff3cd;
+          padding: 15px;
+          border-radius: 4px;
+          margin: 20px 0;
+          border-left: 4px solid #ffc107;
+        }
+        .footer {
+          background-color: #f8f9fa;
+          padding: 20px;
+          text-align: center;
+          font-size: 12px;
+          color: #6c757d;
+        }
+        .button {
+          display: inline-block;
+          padding: 12px 30px;
+          background-color: #667eea;
+          color: #ffffff;
+          text-decoration: none;
+          border-radius: 5px;
+          margin: 20px 0;
+          font-weight: 600;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>✨ New Booking Received</h1>
+        </div>
+        
+        <div class="content">
+          <p>Hello ${worker.firstName},</p>
+          <p>You have received a new booking. Please review the details below:</p>
+          
+          <div class="booking-card">
+            <h3 style="margin-top: 0; color: #667eea;">📋 Booking Details</h3>
+            
+            <div class="info-row">
+              <div class="info-label">Booking ID:</div>
+              <div class="info-value">#${bookingId}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Customer:</div>
+              <div class="info-value">${customer.firstName} ${customer.lastName}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <div class="info-value">${customer.phone || "Not provided"}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <div class="info-value">${customer.email}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">📅 Date:</div>
+              <div class="info-value">${new Date(
+                booking.date,
+              ).toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">🕐 Time:</div>
+              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">📍 Location:</div>
+              <div class="info-value">
+                ${customer.address}<br>
+                ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
+              </div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">💰 Amount:</div>
+              <div class="info-value">$${booking.paymentAmount?.toFixed(2)}</div>
+            </div>
+          </div>
+          
+          
+        </div>
+        
+        
+      </div>
+    </body>
+    </html>
+  `,
     });
 
+    // Email to customer
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+      from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
       to: customer.email,
-      subject: "A booking has been confirmed",
-      text: `Your booking has been confirmed. Booking ID: ${bookingId}. Worker: ${worker.firstName} ${worker.lastName}. Date: ${booking.date}. Time: ${booking.startTime}`,
+      subject: "✅ Your Booking is Confirmed!",
+      html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          line-height: 1.6;
+          color: #333;
+          margin: 0;
+          padding: 0;
+          background-color: #f4f4f4;
+        }
+        .container {
+          max-width: 600px;
+          margin: 20px auto;
+          background-color: #ffffff;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: #ffffff;
+          padding: 40px 30px;
+          text-align: center;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 28px;
+          font-weight: 600;
+        }
+        .success-icon {
+          font-size: 60px;
+          margin-bottom: 10px;
+        }
+        .content {
+          padding: 30px;
+        }
+        .booking-card {
+          background-color: #f8f9fa;
+          border-left: 4px solid #28a745;
+          padding: 20px;
+          margin: 20px 0;
+          border-radius: 4px;
+        }
+        .info-row {
+          display: flex;
+          padding: 8px 0;
+          border-bottom: 1px solid #e9ecef;
+        }
+        .info-row:last-child {
+          border-bottom: none;
+        }
+        .info-label {
+          font-weight: 600;
+          color: #495057;
+          min-width: 120px;
+        }
+        .info-value {
+          color: #212529;
+        }
+        .services-list {
+          background-color: #fff;
+          padding: 15px;
+          border-radius: 4px;
+          margin: 15px 0;
+          border: 1px solid #dee2e6;
+        }
+        .highlight-box {
+          background-color: #d1ecf1;
+          padding: 15px;
+          border-radius: 4px;
+          margin: 20px 0;
+          border-left: 4px solid #17a2b8;
+        }
+        .footer {
+          background-color: #f8f9fa;
+          padding: 20px;
+          text-align: center;
+          font-size: 12px;
+          color: #6c757d;
+        }
+        .button {
+          display: inline-block;
+          padding: 12px 30px;
+          background-color: #28a745;
+          color: #ffffff;
+          text-decoration: none;
+          border-radius: 5px;
+          margin: 20px 0;
+          font-weight: 600;
+        }
+        .button-secondary {
+          display: inline-block;
+          padding: 12px 30px;
+          background-color: #6c757d;
+          color: #ffffff;
+          text-decoration: none;
+          border-radius: 5px;
+          margin: 10px 5px;
+          font-weight: 600;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="success-icon">✓</div>
+          <h1>Booking Confirmed!</h1>
+          <p style="margin: 10px 0 0 0; font-size: 16px;">Your appointment has been successfully booked</p>
+        </div>
+        
+        <div class="content">
+          <p>Dear ${customer.firstName},</p>
+          <p>Thank you for choosing In Home Beauty Services! We're excited to serve you.</p>
+          
+          <div class="booking-card">
+            <h3 style="margin-top: 0; color: #28a745;">📋 Your Booking Summary</h3>
+            
+            <div class="info-row">
+              <div class="info-label">Confirmation #:</div>
+              <div class="info-value"><strong>#${bookingId}</strong></div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Professional:</div>
+              <div class="info-value">${worker.firstName} ${worker.lastName}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">📅 Date:</div>
+              <div class="info-value">${new Date(
+                booking.date,
+              ).toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">🕐 Time:</div>
+              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">📍 Location:</div>
+              <div class="info-value">
+                ${customer.address}<br>
+                ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
+              </div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">💳 Amount Paid:</div>
+              <div class="info-value"><strong>$${booking.paymentAmount?.toFixed(2)}</strong></div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Payment Status:</div>
+              <div class="info-value"><span style="color: #28a745; font-weight: 600;">✓ Confirmed</span></div>
+            </div>
+          </div>
+          
+         
+      </div>
+    </body>
+    </html>
+  `,
     });
 
+    console.log("✅ Confirmation emails sent");
     console.log("✅ Booking confirmed:", {
       bookingId: booking._id,
       isPayment: booking.isPayment,
@@ -256,6 +612,7 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
     });
   } catch (error: any) {
     console.error("❌ Error handling successful payment:", error.message);
+    console.error(error.stack);
   }
 };
 
