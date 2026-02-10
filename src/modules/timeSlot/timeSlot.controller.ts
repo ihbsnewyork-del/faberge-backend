@@ -1,13 +1,17 @@
 import { Request, Response } from "express";
 import { TimeSlotModel } from "./timeSlot.model";
 import { BookingModel } from "../booking/booking.model";
+import {
+  getCurrentTimeInTimezone,
+  getDayBoundariesInUTC,
+  convertFromUTC,
+} from "../../helper/timezoneHelper";
 
 function generateDefaultSlots() {
   const slots = [];
   let hour = 9;
   let minute = 0;
 
-  // ⛔ 19:00 থেকে slot start হবে না
   while (hour < 19) {
     const start = `${hour.toString().padStart(2, "0")}:${minute
       .toString()
@@ -21,7 +25,6 @@ function generateDefaultSlots() {
       nextMinute -= 60;
     }
 
-    // ⛔ extra safety (optional)
     if (nextHour > 19 || (nextHour === 19 && nextMinute > 0)) {
       break;
     }
@@ -46,6 +49,16 @@ function generateDefaultSlots() {
 
 export default generateDefaultSlots;
 
+// Helper to get client timezone from request
+const getClientTimezone = (req: any): string => {
+  return (
+    req.headers["x-timezone"] ||
+    req.query.timezone ||
+    req.user?.timezone ||
+    "UTC"
+  );
+};
+
 // ---------------------------------------
 // Set Worker Unavailability
 // ---------------------------------------
@@ -53,6 +66,7 @@ export const setWorkerUnAvailability = async (req: any, res: Response) => {
   try {
     const workerId = req.user.userId;
     const { date, unavailableSlots } = req.body;
+    const clientTimezone = getClientTimezone(req);
 
     if (!date || !Array.isArray(unavailableSlots)) {
       res
@@ -61,7 +75,16 @@ export const setWorkerUnAvailability = async (req: any, res: Response) => {
       return;
     }
 
-    let timeSlot = await TimeSlotModel.findOne({ worker: workerId, date });
+    // Convert client date to UTC for database query
+    const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+      date,
+      clientTimezone,
+    );
+
+    let timeSlot = await TimeSlotModel.findOne({
+      worker: workerId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+    });
 
     if (timeSlot?.isOffDay === true) {
       res.status(400).json({ message: "Worker is off day" });
@@ -71,12 +94,10 @@ export const setWorkerUnAvailability = async (req: any, res: Response) => {
     if (!timeSlot) {
       timeSlot = new TimeSlotModel({
         worker: workerId,
-        date,
+        date: startOfDay, // Store in UTC
         slots: generateDefaultSlots(),
       });
     }
-
-    console.log(timeSlot);
 
     timeSlot.slots.forEach((slot) => {
       if (unavailableSlots.includes(slot.startTime)) {
@@ -91,6 +112,7 @@ export const setWorkerUnAvailability = async (req: any, res: Response) => {
     res.status(200).json({
       message: "Unavailability updated successfully",
       data: timeSlot,
+      timezone: clientTimezone,
     });
   } catch (err: any) {
     console.error("Error setting unavailability:", err);
@@ -108,30 +130,33 @@ export const setOffDay = async (req: any, res: Response) => {
   try {
     const workerId = req.user.userId;
     const { date } = req.body;
+    const clientTimezone = getClientTimezone(req);
 
     if (!date) {
       res.status(400).json({ message: "Date is required" });
       return;
     }
 
+    // Get current time in client's timezone
+    const currentTime = getCurrentTimeInTimezone(clientTimezone);
+    const currentDate = new Date(currentTime.date);
     const inputDate = new Date(date);
-    const today = new Date();
 
-    inputDate.setHours(0, 0, 0, 0);
-    today.setHours(0, 0, 0, 0);
-
-    if (inputDate < today) {
+    if (inputDate < currentDate) {
       res.status(400).json({ message: "You cannot set past date as off day" });
       return;
     }
 
+    // Convert to UTC for database operations
+    const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+      date,
+      clientTimezone,
+    );
+
     const timeSlot = await TimeSlotModel.findOne({
       worker: workerId,
-      date,
+      date: { $gte: startOfDay, $lte: endOfDay },
     });
-
-    const startOfDay = new Date(`${date}T00:00:00.000Z`);
-    const endOfDay = new Date(`${date}T23:59:59.999Z`);
 
     const bookingExists = await BookingModel.findOne({
       worker: workerId,
@@ -149,31 +174,33 @@ export const setOffDay = async (req: any, res: Response) => {
 
     if (timeSlot && timeSlot.isOffDay) {
       const offDay = await TimeSlotModel.findOneAndUpdate(
-        { worker: workerId, date: startOfDay },
+        { worker: workerId, date: { $gte: startOfDay, $lte: endOfDay } },
         {
           worker: workerId,
           date: startOfDay,
           isOffDay: false,
           slots: generateDefaultSlots(),
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
       res.status(200).json({
         message: "Off day removed successfully",
         data: offDay,
+        timezone: clientTimezone,
       });
       return;
     }
 
     const offDay = await TimeSlotModel.findOneAndUpdate(
-      { worker: workerId, date: startOfDay },
+      { worker: workerId, date: { $gte: startOfDay, $lte: endOfDay } },
       { worker: workerId, date: startOfDay, isOffDay: true, slots: [] },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     res.status(200).json({
       message: "Off day set successfully",
       data: offDay,
+      timezone: clientTimezone,
     });
   } catch (error: any) {
     console.error(error);
@@ -192,6 +219,7 @@ export const getAllWorkerAvailability = async (req: Request, res: Response) => {
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+    const clientTimezone = getClientTimezone(req);
 
     const total = await TimeSlotModel.countDocuments();
     const timeSlots = await TimeSlotModel.find()
@@ -200,9 +228,19 @@ export const getAllWorkerAvailability = async (req: Request, res: Response) => {
       .limit(limit)
       .sort({ date: 1 });
 
+    // Convert UTC dates to client timezone
+    const timeSlotsWithClientTime = timeSlots.map((slot: any) => {
+      const slotObj = slot.toObject();
+      const clientDateTime = convertFromUTC(slot.date, clientTimezone);
+      slotObj.displayDate = clientDateTime.date;
+      slotObj.timezone = clientTimezone;
+      return slotObj;
+    });
+
     res.status(200).json({
       message: "Workers availability fetched successfully",
-      data: timeSlots,
+      data: timeSlotsWithClientTime,
+      timezone: clientTimezone,
       pagination: {
         total,
         page,
@@ -226,15 +264,22 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
   try {
     const { workerId } = req.params;
     const { date } = req.query;
+    const clientTimezone = getClientTimezone(req);
 
     if (!date) {
       res.status(400).json({ message: "Date query parameter is required" });
       return;
     }
 
+    // Convert client date to UTC
+    const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+      date as string,
+      clientTimezone,
+    );
+
     let timeSlot = await TimeSlotModel.findOne({
       worker: workerId,
-      date,
+      date: { $gte: startOfDay, $lte: endOfDay },
     });
 
     if (
@@ -243,26 +288,33 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
     ) {
       timeSlot = new TimeSlotModel({
         worker: workerId,
-        date,
+        date: startOfDay, // Store in UTC
         slots: generateDefaultSlots(),
       });
     }
 
+    // Get current time in client timezone
+    const currentTime = getCurrentTimeInTimezone(clientTimezone);
     const requestedDate = new Date(date as string);
-    const today = new Date();
+    const currentDate = new Date(currentTime.date);
 
     const isToday =
-      requestedDate.getFullYear() === today.getFullYear() &&
-      requestedDate.getMonth() === today.getMonth() &&
-      requestedDate.getDate() === today.getDate();
+      requestedDate.getFullYear() === currentDate.getFullYear() &&
+      requestedDate.getMonth() === currentDate.getMonth() &&
+      requestedDate.getDate() === currentDate.getDate();
 
     if (isToday) {
-      const currentTime = today.getHours() * 60 + today.getMinutes();
+      // Parse current time in client timezone
+      const [currentHour, currentMinute] = currentTime.time
+        .split(":")
+        .map(Number);
+      const currentTimeInMinutes = currentHour * 60 + currentMinute;
 
+      // Filter out past slots
       const slotsToRemove = timeSlot.slots.filter((slot) => {
         const [h, m] = slot.startTime.split(":").map(Number);
         const slotStartMinutes = h * 60 + m;
-        return slotStartMinutes <= currentTime;
+        return slotStartMinutes <= currentTimeInMinutes;
       });
 
       slotsToRemove.forEach((slot) => {
@@ -272,9 +324,17 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
 
     await timeSlot.save();
 
+    // Add timezone info to response
+    const timeSlotObj = timeSlot.toObject();
+    const clientDateTime = convertFromUTC(timeSlot.date, clientTimezone);
+
     res.status(200).json({
       message: "Worker availability fetched successfully",
-      data: timeSlot,
+      data: {
+        ...timeSlotObj,
+        displayDate: clientDateTime.date,
+        timezone: clientTimezone,
+      },
     });
   } catch (err: any) {
     console.error(err);

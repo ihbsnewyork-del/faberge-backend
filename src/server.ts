@@ -20,8 +20,8 @@ connectDB().then(async () => {
   };
 
   // Create an HTTPS server
-  // const server = http.createServer(app);
-  const server = https.createServer(options, app);
+  const server = http.createServer(app);
+  // const server = https.createServer(options, app);
 
   server.listen(PORT, () => {
     console.log(`Server running at ${HOST}:${PORT}`);

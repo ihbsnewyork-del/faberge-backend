@@ -8,11 +8,28 @@ import generateDefaultSlots from "../timeSlot/timeSlot.controller";
 import { paginate } from "../../helper/paginationHelper";
 import nodemailer from "nodemailer";
 
+import {
+  convertToUTC,
+  convertFromUTC,
+  getCurrentTimeInTimezone,
+  hasBookingEnded,
+  getDayBoundariesInUTC,
+} from "../../helper/timezoneHelper";
+
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
+export const getClientTimezone = (req: any): string => {
+  return (
+    req.headers["x-timezone"] ||
+    req.query.timezone ||
+    req.user?.timezone ||
+    "UTC"
+  );
+};
+
 function convertTo24Hour(time12h: string) {
-  const [time, modifier] = time12h.trim().split(" "); // "02:30", "PM"
+  const [time, modifier] = time12h.trim().split(" ");
   let [hours, minutes] = time.split(":").map(Number);
 
   if (modifier.toUpperCase() === "PM" && hours !== 12) {
@@ -40,17 +57,15 @@ const calculateTotalPrice = async (booking: any) => {
       continue;
     }
 
-    // Add base service price
     total += serviceDoc.price;
 
-    // Add subcategory prices if they exist
     if (srv.subcategories && srv.subcategories.length > 0) {
       for (const subId of srv.subcategories) {
         const sub = serviceDoc.subcategory?.find(
           (s: any) => s._id.toString() === subId.toString(),
         );
         if (sub) {
-          total += sub.subcategoryPrice; // ← Changed from sub.price
+          total += sub.subcategoryPrice;
         }
       }
     }
@@ -79,7 +94,6 @@ export const initializePayment = async (req: any, res: Response) => {
     }
 
     const workerId = booking.worker;
-
     const worker = await WorkerModel.findById(workerId);
     if (!worker) {
       res.status(404).json({ message: "Worker not found" });
@@ -93,8 +107,6 @@ export const initializePayment = async (req: any, res: Response) => {
       customerId: customerId.toString(),
       workerId: workerId.toString(),
     };
-
-    console.log(metadata);
 
     const session = await stripe.checkout.sessions.create({
       customer_email: customer.email,
@@ -145,9 +157,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
   let event: Stripe.Event;
 
   try {
-    // req.body should be a Buffer when using express.raw()
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-
     console.log("✅ Webhook signature verified:", event.type);
   } catch (err: any) {
     console.error("❌ Webhook signature verification failed:", err.message);
@@ -179,7 +189,6 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
     res.json({ received: true });
   } catch (error: any) {
     console.error("❌ Error processing webhook event:", error.message);
-    // Still return 200 to acknowledge receipt
     res.status(200).json({ received: true, error: error.message });
   }
 };
@@ -697,7 +706,16 @@ export const bookTimeSlot = async (req: any, res: Response) => {
   try {
     const { userId: customerId } = req.user;
     const { workerId, services, date, startTime } = req.body;
-    console.log({ customerId, workerId, services, date, startTime });
+    const clientTimezone = getClientTimezone(req);
+
+    console.log({
+      customerId,
+      workerId,
+      services,
+      date,
+      startTime,
+      clientTimezone,
+    });
 
     if (
       !workerId ||
@@ -736,11 +754,24 @@ export const bookTimeSlot = async (req: any, res: Response) => {
       }
     }
 
-    let timeSlotDoc = await TimeSlotModel.findOne({ worker: workerId, date });
+    // Convert client date/time to UTC for database storage
+    const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+      date,
+      clientTimezone,
+    );
+
+    // Store the date in UTC
+    const utcBookingDate = startOfDay;
+
+    let timeSlotDoc = await TimeSlotModel.findOne({
+      worker: workerId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+    });
+
     if (!timeSlotDoc) {
       timeSlotDoc = new TimeSlotModel({
         worker: workerId,
-        date,
+        date: utcBookingDate,
         slots: generateDefaultSlots(),
         heldBy: customer?._id,
       });
@@ -766,6 +797,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     const slot = timeSlotDoc.slots[slotIndex];
     const now = new Date();
 
+    // Check if hold has expired
     if (slot.heldUntil && now >= slot.heldUntil && !slot.isBooked) {
       console.log(`🔓 Releasing expired hold on slot ${startTime}`);
 
@@ -821,14 +853,13 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     }));
 
     const HOLD_MINUTES = 3;
-
     const paymentExpiresAt = new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
 
     const booking = await BookingModel.create({
       customer: customerId,
       worker: workerId,
       services: formattedServices,
-      date,
+      date: utcBookingDate, // Store in UTC
       startTime: slot.startTime,
       endTime: slot.endTime,
       status: "pending",
@@ -872,6 +903,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
 export const getWorkerBookings = async (req: any, res: Response) => {
   try {
     const workerId = req.user.userId;
+    const clientTimezone = getClientTimezone(req);
 
     const worker = await WorkerModel.findById(workerId);
     if (!worker) {
@@ -886,46 +918,43 @@ export const getWorkerBookings = async (req: any, res: Response) => {
     const month = parseInt(req.query.month);
     const year = parseInt(req.query.year);
     const date = req.query.date;
-    const status = req.query.status; // optional: "booked" | "completed" | "cancelled"
-    const filterType = req.query.filter; // optional: "upcoming" | "completed"
-
-    console.log(date);
+    const status = req.query.status;
+    const filterType = req.query.filter;
 
     const query: any = { worker: workerId };
 
     if (date) {
-      const target = new Date(date);
-
-      const startOfDay = new Date(target);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(target);
-      endOfDay.setHours(23, 59, 59, 999);
-
+      const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+        date,
+        clientTimezone,
+      );
       query.date = { $gte: startOfDay, $lte: endOfDay };
     } else if (!isNaN(month) && !isNaN(year)) {
-      const start = new Date(year, month - 1, 1, 0, 0, 0);
-      const end = new Date(year, month, 0, 23, 59, 59, 999);
+      // Convert month boundaries to UTC
+      const firstDay = `${year}-${month.toString().padStart(2, "0")}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const lastDayStr = `${year}-${month.toString().padStart(2, "0")}-${lastDay}`;
 
-      query.date = { $gte: start, $lte: end };
+      const { startOfDay } = getDayBoundariesInUTC(firstDay, clientTimezone);
+      const { endOfDay } = getDayBoundariesInUTC(lastDayStr, clientTimezone);
+
+      query.date = { $gte: startOfDay, $lte: endOfDay };
     } else if (filterType === "upcoming" || filterType === "completed") {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const currentTime = getCurrentTimeInTimezone(clientTimezone);
+      const { startOfDay } = getDayBoundariesInUTC(
+        currentTime.date,
+        clientTimezone,
+      );
 
-      if (filterType === "upcoming") query.date = { $gte: today };
-
-      if (filterType === "completed") query.date = { $lt: today };
+      if (filterType === "upcoming") {
+        query.date = { $gte: startOfDay };
+      } else {
+        query.date = { $lt: startOfDay };
+      }
     }
+
     if (status) {
       query.status = status;
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (filterType === "upcoming") {
-      query.date = { ...query.date, $gte: today };
-    } else if (filterType === "completed") {
-      query.date = { ...query.date, $lt: today };
     }
 
     const total = await BookingModel.countDocuments(query);
@@ -946,17 +975,30 @@ export const getWorkerBookings = async (req: any, res: Response) => {
       .skip(skip)
       .limit(limit);
 
-    const groupedByDate = bookings.reduce((acc: any, booking: any) => {
-      const day = booking.date.toISOString().split("T")[0];
-      if (!acc[day]) acc[day] = [];
-      acc[day].push(booking);
-      return acc;
-    }, {});
+    // Convert UTC dates back to client timezone for display
+    const bookingsWithClientTime = bookings.map((booking: any) => {
+      const bookingObj = booking.toObject();
+      const clientDateTime = convertFromUTC(booking.date, clientTimezone);
+      bookingObj.displayDate = clientDateTime.date;
+      bookingObj.clientTimezone = clientTimezone;
+      return bookingObj;
+    });
+
+    const groupedByDate = bookingsWithClientTime.reduce(
+      (acc: any, booking: any) => {
+        const day = booking.displayDate;
+        if (!acc[day]) acc[day] = [];
+        acc[day].push(booking);
+        return acc;
+      },
+      {},
+    );
 
     res.status(200).json({
       message: "Worker bookings fetched successfully",
       month,
       year,
+      timezone: clientTimezone,
       data: groupedByDate,
       pagination: {
         total: total,
@@ -1101,6 +1143,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
 export const getCustomerBookings = async (req: any, res: Response) => {
   try {
     const customerId = req.user.userId;
+    const clientTimezone = getClientTimezone(req);
 
     const customer = await CustomerModel.findById(customerId);
     if (!customer) {
@@ -1114,36 +1157,40 @@ export const getCustomerBookings = async (req: any, res: Response) => {
 
     const month = parseInt(req.query.month);
     const year = parseInt(req.query.year);
-    const status = req.query.status; // "booked" | "completed"
-    const filterType = req.query.filter; // "upcoming" | "completed"
+    const status = req.query.status;
+    const filterType = req.query.filter;
 
     const query: any = {
       customer: customerId,
     };
 
-    // ✅ Default: only booked & completed
     if (!status) {
       query.status = { $in: ["booked", "completed"] };
     } else {
-      // ✅ Explicit filter
       query.status = status;
     }
 
-    // Date filter (month/year)
     if (month && year) {
-      const startDate = new Date(year, month - 1, 1);
-      const endDate = new Date(year, month, 0, 23, 59, 59);
-      query.date = { $gte: startDate, $lte: endDate };
+      const firstDay = `${year}-${month.toString().padStart(2, "0")}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const lastDayStr = `${year}-${month.toString().padStart(2, "0")}-${lastDay}`;
+
+      const { startOfDay } = getDayBoundariesInUTC(firstDay, clientTimezone);
+      const { endOfDay } = getDayBoundariesInUTC(lastDayStr, clientTimezone);
+
+      query.date = { $gte: startOfDay, $lte: endOfDay };
     }
 
-    // Upcoming / completed based on date (optional)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const currentTime = getCurrentTimeInTimezone(clientTimezone);
+    const { startOfDay: todayStart } = getDayBoundariesInUTC(
+      currentTime.date,
+      clientTimezone,
+    );
 
     if (filterType === "upcoming") {
-      query.date = { ...query.date, $gte: today };
+      query.date = { ...query.date, $gte: todayStart };
     } else if (filterType === "completed") {
-      query.date = { ...query.date, $lt: today };
+      query.date = { ...query.date, $lt: todayStart };
     }
 
     const total = await BookingModel.countDocuments(query);
@@ -1164,31 +1211,30 @@ export const getCustomerBookings = async (req: any, res: Response) => {
       .skip(skip)
       .limit(limit);
 
-    const groupedByDate = bookings.reduce((acc: any, booking: any) => {
-      const day = booking.date.toISOString().split("T")[0];
-      if (!acc[day]) acc[day] = [];
-      acc[day].push(booking);
-      return acc;
-    }, {});
-
-    console.log("====================");
-    console.log({
-      message: "Customer bookings fetched successfully",
-      month,
-      year,
-      data: groupedByDate,
-      pagination: {
-        total: total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+    // Convert UTC dates to client timezone
+    const bookingsWithClientTime = bookings.map((booking: any) => {
+      const bookingObj = booking.toObject();
+      const clientDateTime = convertFromUTC(booking.date, clientTimezone);
+      bookingObj.displayDate = clientDateTime.date;
+      bookingObj.clientTimezone = clientTimezone;
+      return bookingObj;
     });
+
+    const groupedByDate = bookingsWithClientTime.reduce(
+      (acc: any, booking: any) => {
+        const day = booking.displayDate;
+        if (!acc[day]) acc[day] = [];
+        acc[day].push(booking);
+        return acc;
+      },
+      {},
+    );
 
     res.status(200).json({
       message: "Customer bookings fetched successfully",
       month,
       year,
+      timezone: clientTimezone,
       data: groupedByDate,
       pagination: {
         total: total,

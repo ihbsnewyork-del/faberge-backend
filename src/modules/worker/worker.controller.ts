@@ -9,6 +9,8 @@ import { paginate } from "../../helper/paginationHelper";
 import { title } from "process";
 import { BookingModel } from "../booking/booking.model";
 import { Types } from "mongoose";
+import { getCurrentTimeInTimezone, getDayBoundariesInUTC } from "../../helper/timezoneHelper";
+import { getClientTimezone } from "../booking/booking.controller";
 
 // --------------------
 // Register Worker
@@ -104,7 +106,7 @@ export const updateWorker = async (req: Request, res: Response) => {
     const updatedWorker = await WorkerModel.findByIdAndUpdate(
       id,
       { $set: data },
-      { new: true }
+      { new: true },
     ).select(" -resetOtp -otpExpires -__v -otpVerified -createdAt -updatedAt");
 
     res.status(200).json({
@@ -126,7 +128,7 @@ export const getOneWorker = async (req: Request, res: Response) => {
     const { id } = req.params;
     const worker = await WorkerModel.findById(id)
       .select(
-        "-password -resetOtp -otpExpires -__v -otpVerified -createdAt -updatedAt"
+        "-password -resetOtp -otpExpires -__v -otpVerified -createdAt -updatedAt",
       )
       .populate({
         path: "services",
@@ -200,7 +202,7 @@ export const getAllWorker = async (req: Request, res: Response) => {
                     return await WorkerModel.db
                       .collection("subcategories")
                       .findOne({ _id: subId });
-                  })
+                  }),
                 )
               : [];
 
@@ -208,7 +210,7 @@ export const getAllWorker = async (req: Request, res: Response) => {
               service: serviceDoc,
               subcategories,
             };
-          })
+          }),
         );
 
         delete obj.password;
@@ -220,7 +222,7 @@ export const getAllWorker = async (req: Request, res: Response) => {
         delete obj.updatedAt;
 
         return obj;
-      })
+      }),
     );
 
     res.status(200).json({
@@ -274,17 +276,29 @@ export const toggleWorkerDelete = async (req: Request, res: Response) => {
 export const getWorkerDashboardStats = async (req: any, res: Response) => {
   try {
     const workerId = new Types.ObjectId(req.user.userId);
+    const clientTimezone = getClientTimezone(req);
 
-    const now = new Date();
+    // Get current time in worker's timezone
+    const currentTime = getCurrentTimeInTimezone(clientTimezone);
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    // Get today's boundaries in UTC for database query
+    const { startOfDay: startOfToday, endOfDay: endOfToday } =
+      getDayBoundariesInUTC(currentTime.date, clientTimezone);
 
-    const endOfToday = new Date();
-    endOfToday.setHours(23, 59, 59, 999);
+    // Get month boundaries in UTC
+    const currentDate = new Date(currentTime.date);
+    const firstDayOfMonth = `${currentDate.getFullYear()}-${(currentDate.getMonth() + 1).toString().padStart(2, "0")}-01`;
+    const { startOfDay: startOfMonth } = getDayBoundariesInUTC(
+      firstDayOfMonth,
+      clientTimezone,
+    );
 
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    // Get year boundaries in UTC
+    const firstDayOfYear = `${currentDate.getFullYear()}-01-01`;
+    const { startOfDay: startOfYear } = getDayBoundariesInUTC(
+      firstDayOfYear,
+      clientTimezone,
+    );
 
     // -------------------------
     // 1. Today's completed bookings
@@ -344,14 +358,14 @@ export const getWorkerDashboardStats = async (req: any, res: Response) => {
     // 2. Monthly stats
     // -------------------------
     const monthlyStats = await BookingModel.aggregate(
-      statsPipeline(startOfMonth)
+      statsPipeline(startOfMonth),
     );
 
     // -------------------------
     // 3. Yearly stats
     // -------------------------
     const yearlyStats = await BookingModel.aggregate(
-      statsPipeline(startOfYear)
+      statsPipeline(startOfYear),
     );
 
     res.status(200).json({
@@ -364,6 +378,8 @@ export const getWorkerDashboardStats = async (req: any, res: Response) => {
         hoursBooked: yearlyStats[0]?.totalHours || 0,
         totalEarnings: yearlyStats[0]?.totalEarnings || 0,
       },
+      timezone: clientTimezone,
+      currentDate: currentTime.date,
     });
   } catch (error: any) {
     console.error(error);
