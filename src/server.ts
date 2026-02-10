@@ -6,7 +6,7 @@ import { seedAdmin } from "./config/seedAdmin";
 import { startCleanupScheduler } from "./modules/booking/booking.controller";
 import fs from "fs";
 import https from "https";
-import http from "http";
+// import http from "http";
 
 connectDB().then(async () => {
   await seedAdmin();
