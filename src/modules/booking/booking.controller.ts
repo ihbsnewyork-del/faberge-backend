@@ -229,7 +229,7 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
         paymentExpiresAt: null,
       },
       { new: true },
-    );
+    ).populate("services.service");
 
     if (!booking) {
       console.error("❌ Booking not found:", bookingId);
@@ -435,27 +435,8 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
               <div class="info-label">Booking ID:</div>
               <span class="info-value">#${bookingId}</span>
             </div>
-
-
-            
-            
-          
-            
-            
-            
-            // <div class="info-row">
-            //   <div class="info-label">Email:</div>
-            //   <span class="info-value">${customer.email}</span>
-            // </div>
-            
+ 
            
-            
-           
-            
-            // <div class="info-row">
-            //   <div class="info-label">💰 Amount:</div>
-            //   <span class="info-value">$${booking.paymentAmount?.toFixed(2)}</span>
-            // </div>
           </div>
           
           
