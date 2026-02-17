@@ -8,11 +8,39 @@ import generateDefaultSlots from "../timeSlot/timeSlot.controller";
 import { paginate } from "../../helper/paginationHelper";
 import nodemailer from "nodemailer";
 
+import {
+  convertToUTC,
+  convertFromUTC,
+  getCurrentTimeInTimezone,
+  hasBookingEnded,
+  getDayBoundariesInUTC,
+} from "../../helper/timezoneHelper";
+
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
+export const getClientTimezone = (req: any): string => {
+  return (
+    req.headers["x-timezone"] ||
+    req.query.timezone ||
+    req.user?.timezone ||
+    "UTC"
+  );
+};
+
+function convertTo12Hour(time24: string): string {
+  const [hourStr, minutes] = time24.split(":");
+  let hours = parseInt(hourStr);
+  const modifier = hours >= 12 ? "PM" : "AM";
+
+  if (hours === 0) hours = 12;
+  else if (hours > 12) hours -= 12;
+
+  return `${hours}:${minutes} ${modifier}`;
+}
+
 function convertTo24Hour(time12h: string) {
-  const [time, modifier] = time12h.trim().split(" "); // "02:30", "PM"
+  const [time, modifier] = time12h.trim().split(" ");
   let [hours, minutes] = time.split(":").map(Number);
 
   if (modifier.toUpperCase() === "PM" && hours !== 12) {
@@ -40,17 +68,15 @@ const calculateTotalPrice = async (booking: any) => {
       continue;
     }
 
-    // Add base service price
     total += serviceDoc.price;
 
-    // Add subcategory prices if they exist
     if (srv.subcategories && srv.subcategories.length > 0) {
       for (const subId of srv.subcategories) {
         const sub = serviceDoc.subcategory?.find(
           (s: any) => s._id.toString() === subId.toString(),
         );
         if (sub) {
-          total += sub.subcategoryPrice; // ← Changed from sub.price
+          total += sub.subcategoryPrice;
         }
       }
     }
@@ -79,7 +105,6 @@ export const initializePayment = async (req: any, res: Response) => {
     }
 
     const workerId = booking.worker;
-
     const worker = await WorkerModel.findById(workerId);
     if (!worker) {
       res.status(404).json({ message: "Worker not found" });
@@ -93,8 +118,6 @@ export const initializePayment = async (req: any, res: Response) => {
       customerId: customerId.toString(),
       workerId: workerId.toString(),
     };
-
-    console.log(metadata);
 
     const session = await stripe.checkout.sessions.create({
       customer_email: customer.email,
@@ -145,9 +168,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
   let event: Stripe.Event;
 
   try {
-    // req.body should be a Buffer when using express.raw()
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-
     console.log("✅ Webhook signature verified:", event.type);
   } catch (err: any) {
     console.error("❌ Webhook signature verification failed:", err.message);
@@ -179,7 +200,6 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
     res.json({ received: true });
   } catch (error: any) {
     console.error("❌ Error processing webhook event:", error.message);
-    // Still return 200 to acknowledge receipt
     res.status(200).json({ received: true, error: error.message });
   }
 };
@@ -360,57 +380,82 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
           <p>You have received a new booking. Please review the details below:</p>
           
           <div class="booking-card">
-            <h3 style="margin-top: 0; color: #667eea;">📋 Booking Details</h3>
-            
-            <div class="info-row">
-              <div class="info-label">Booking ID:</div>
-              <div class="info-value">#${bookingId}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Customer:</div>
-              <div class="info-value">${customer.firstName} ${customer.lastName}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Phone:</div>
-              <div class="info-value">${customer.phone || "Not provided"}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Email:</div>
-              <div class="info-value">${customer.email}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">📅 Date:</div>
-              <div class="info-value">${new Date(
+            <h3 style="margin-top: 0; color: #667eea;">Booking Details</h3>
+
+             <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(
                 booking.date,
               ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
-              })}</div>
+              })}</span>
             </div>
-            
+
             <div class="info-row">
-              <div class="info-label">🕐 Time:</div>
-              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
+
             </div>
-            
+
+
             <div class="info-row">
-              <div class="info-label">📍 Location:</div>
-              <div class="info-value">
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
+            </div>
+
+            <div class="info-row">
+              <div class="info-label">Customer:</div>
+              <span class="info-value">${customer.firstName} ${customer.lastName}</span>
+            </div>
+
+
+            <div class="info-row">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
                 ${customer.address}<br>
                 ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
-              </div>
+              </span>
             </div>
+
+
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${customer.phone || "Not provided"}</span>
+            </div>
+
+            
+            
             
             <div class="info-row">
-              <div class="info-label">💰 Amount:</div>
-              <div class="info-value">$${booking.paymentAmount?.toFixed(2)}</div>
+              <div class="info-label">Booking ID:</div>
+              <span class="info-value">#${bookingId}</span>
             </div>
+
+
+            
+            
+          
+            
+            
+            
+            // <div class="info-row">
+            //   <div class="info-label">Email:</div>
+            //   <span class="info-value">${customer.email}</span>
+            // </div>
+            
+           
+            
+           
+            
+            // <div class="info-row">
+            //   <div class="info-label">💰 Amount:</div>
+            //   <span class="info-value">$${booking.paymentAmount?.toFixed(2)}</span>
+            // </div>
           </div>
           
           
@@ -549,51 +594,66 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
           
           <div class="booking-card">
             <h3 style="margin-top: 0; color: #28a745;">📋 Your Booking Summary</h3>
-            
+
+
             <div class="info-row">
-              <div class="info-label">Confirmation #:</div>
-              <div class="info-value"><strong>#${bookingId}</strong></div>
+              <div class="info-label">Worker:</div>
+              <span class="info-value">${worker.firstName} ${worker.lastName}</span>
             </div>
-            
+
             <div class="info-row">
-              <div class="info-label">Professional:</div>
-              <div class="info-value">${worker.firstName} ${worker.lastName}</div>
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
             </div>
-            
-            <div class="info-row">
-              <div class="info-label">📅 Date:</div>
-              <div class="info-value">${new Date(
+
+
+              <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(
                 booking.date,
               ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
-              })}</div>
+              })}</span>
             </div>
             
             <div class="info-row">
-              <div class="info-label">🕐 Time:</div>
-              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
             </div>
             
             <div class="info-row">
-              <div class="info-label">📍 Location:</div>
-              <div class="info-value">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
                 ${customer.address}<br>
                 ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
-              </div>
+              </span>
             </div>
-            
-            <div class="info-row">
-              <div class="info-label">💳 Amount Paid:</div>
-              <div class="info-value"><strong>$${booking.paymentAmount?.toFixed(2)}</strong></div>
+
+             <div class="info-row">
+              <div class="info-label">Amount Paid:</div>
+              <span class="info-value"><strong>$${booking.paymentAmount?.toFixed(2)}</strong></span>
             </div>
             
             <div class="info-row">
               <div class="info-label">Payment Status:</div>
               <div class="info-value"><span style="color: #28a745; font-weight: 600;">✓ Confirmed</span></div>
             </div>
+            
+            <div class="info-row">
+              <div class="info-label">Confirmation #:</div>
+              <span class="info-value"><strong>#${bookingId}</strong></span>
+            </div>
+            
+            
+            
+          
+            
+           
           </div>
           
          
@@ -602,6 +662,248 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
     </html>
   `,
     });
+
+
+    // Email to Admin
+await transporter.sendMail({
+  from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
+  to: process.env.ADMIN_EMAIL_MAIL,
+  subject: "🔔 New Booking Alert!",
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          line-height: 1.6;
+          color: #333;
+          margin: 0;
+          padding: 0;
+          background-color: #f4f4f4;
+        }
+        .container {
+          max-width: 600px;
+          margin: 20px auto;
+          background-color: #ffffff;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+          background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+          color: #ffffff;
+          padding: 30px;
+          text-align: center;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 24px;
+          font-weight: 600;
+        }
+        .badge {
+          display: inline-block;
+          background-color: rgba(255,255,255,0.2);
+          padding: 5px 15px;
+          border-radius: 20px;
+          font-size: 13px;
+          margin-top: 8px;
+        }
+        .content {
+          padding: 30px;
+        }
+        .section-title {
+          font-size: 13px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          color: #6c757d;
+          margin: 25px 0 10px 0;
+          padding-bottom: 6px;
+          border-bottom: 2px solid #f0f0f0;
+        }
+        .booking-card {
+          background-color: #f8f9fa;
+          border-left: 4px solid #f5576c;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .info-row {
+          display: flex;
+          padding: 8px 0;
+          border-bottom: 1px solid #e9ecef;
+        }
+        .info-row:last-child {
+          border-bottom: none;
+        }
+        .info-label {
+          font-weight: 600;
+          color: #495057;
+          min-width: 140px;
+        }
+        .info-value {
+          color: #212529;
+        }
+        .customer-card {
+          background-color: #fff8f0;
+          border-left: 4px solid #fd7e14;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .worker-card {
+          background-color: #f0f7ff;
+          border-left: 4px solid #007bff;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .payment-card {
+          background-color: #f0fff4;
+          border-left: 4px solid #28a745;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .amount {
+          font-size: 28px;
+          font-weight: 700;
+          color: #28a745;
+        }
+        .footer {
+          background-color: #f8f9fa;
+          padding: 20px;
+          text-align: center;
+          font-size: 12px;
+          color: #6c757d;
+          border-top: 1px solid #e9ecef;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+
+        <div class="header">
+          <h1>🔔 New Booking Received</h1>
+          <div class="badge">Booking ID: #${bookingId}</div>
+        </div>
+
+        <div class="content">
+
+          <p style="color: #6c757d; font-size: 14px; margin-bottom: 0;">
+            A new booking was just confirmed on 
+            <strong>${new Date().toLocaleDateString("en-US", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}</strong>
+          </p>
+
+          <!-- Booking Details -->
+          <div class="section-title">📅 Booking Details</div>
+          <div class="booking-card">
+            <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(booking.date).toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Status:</div>
+              <span class="info-value" style="color: #28a745; font-weight: 600;">✓ Booked</span>
+            </div>
+          </div>
+
+          <!-- Customer Info -->
+          <div class="section-title">👤 Customer Info</div>
+          <div class="customer-card">
+            <div class="info-row">
+              <div class="info-label">Name:</div>
+              <span class="info-value">${customer.firstName} ${customer.lastName}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${customer.email}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${customer.phone || "Not provided"}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
+                ${customer.address}<br>
+                ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
+              </span>
+            </div>
+          </div>
+
+          <!-- Worker Info -->
+          <div class="section-title">💼 Worker Info</div>
+          <div class="worker-card">
+            <div class="info-row">
+              <div class="info-label">Name:</div>
+              <span class="info-value">${worker.firstName} ${worker.lastName}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${worker.email}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${worker.phone || "Not provided"}</span>
+            </div>
+          </div>
+
+          <!-- Payment Info -->
+          <div class="section-title">💰 Payment Info</div>
+          <div class="payment-card">
+            <div class="info-row">
+              <div class="info-label">Amount:</div>
+              <span class="info-value amount">$${booking.paymentAmount?.toFixed(2)}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Transaction ID:</div>
+              <span class="info-value" style="font-size: 12px; color: #6c757d;">${booking.transactionId || "N/A"}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Payment Status:</div>
+              <span class="info-value" style="color: #28a745; font-weight: 600;">✓ Paid</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="footer">
+          <p>In Home Beauty Services — Admin Notification System</p>
+          <p style="margin: 0;">This is an automated message. Do not reply.</p>
+        </div>
+
+      </div>
+    </body>
+    </html>
+  `,
+});
+
 
     console.log("✅ Confirmation emails sent");
     console.log("✅ Booking confirmed:", {
@@ -697,7 +999,16 @@ export const bookTimeSlot = async (req: any, res: Response) => {
   try {
     const { userId: customerId } = req.user;
     const { workerId, services, date, startTime } = req.body;
-    console.log({ customerId, workerId, services, date, startTime });
+    const clientTimezone = getClientTimezone(req);
+
+    console.log({
+      customerId,
+      workerId,
+      services,
+      date,
+      startTime,
+      clientTimezone,
+    });
 
     if (
       !workerId ||
@@ -736,11 +1047,24 @@ export const bookTimeSlot = async (req: any, res: Response) => {
       }
     }
 
-    let timeSlotDoc = await TimeSlotModel.findOne({ worker: workerId, date });
+    // Convert client date/time to UTC for database storage
+    const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+      date,
+      clientTimezone,
+    );
+
+    // Store the date in UTC
+    const utcBookingDate = startOfDay;
+
+    let timeSlotDoc = await TimeSlotModel.findOne({
+      worker: workerId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+    });
+
     if (!timeSlotDoc) {
       timeSlotDoc = new TimeSlotModel({
         worker: workerId,
-        date,
+        date: utcBookingDate,
         slots: generateDefaultSlots(),
         heldBy: customer?._id,
       });
@@ -766,6 +1090,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     const slot = timeSlotDoc.slots[slotIndex];
     const now = new Date();
 
+    // Check if hold has expired
     if (slot.heldUntil && now >= slot.heldUntil && !slot.isBooked) {
       console.log(`🔓 Releasing expired hold on slot ${startTime}`);
 
@@ -821,14 +1146,13 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     }));
 
     const HOLD_MINUTES = 3;
-
     const paymentExpiresAt = new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
 
     const booking = await BookingModel.create({
       customer: customerId,
       worker: workerId,
       services: formattedServices,
-      date,
+      date: utcBookingDate, // Store in UTC
       startTime: slot.startTime,
       endTime: slot.endTime,
       status: "pending",
@@ -872,6 +1196,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
 export const getWorkerBookings = async (req: any, res: Response) => {
   try {
     const workerId = req.user.userId;
+    const clientTimezone = getClientTimezone(req);
 
     const worker = await WorkerModel.findById(workerId);
     if (!worker) {
@@ -886,46 +1211,43 @@ export const getWorkerBookings = async (req: any, res: Response) => {
     const month = parseInt(req.query.month);
     const year = parseInt(req.query.year);
     const date = req.query.date;
-    const status = req.query.status; // optional: "booked" | "completed" | "cancelled"
-    const filterType = req.query.filter; // optional: "upcoming" | "completed"
-
-    console.log(date);
+    const status = req.query.status;
+    const filterType = req.query.filter;
 
     const query: any = { worker: workerId };
 
     if (date) {
-      const target = new Date(date);
-
-      const startOfDay = new Date(target);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(target);
-      endOfDay.setHours(23, 59, 59, 999);
-
+      const { startOfDay, endOfDay } = getDayBoundariesInUTC(
+        date,
+        clientTimezone,
+      );
       query.date = { $gte: startOfDay, $lte: endOfDay };
     } else if (!isNaN(month) && !isNaN(year)) {
-      const start = new Date(year, month - 1, 1, 0, 0, 0);
-      const end = new Date(year, month, 0, 23, 59, 59, 999);
+      // Convert month boundaries to UTC
+      const firstDay = `${year}-${month.toString().padStart(2, "0")}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const lastDayStr = `${year}-${month.toString().padStart(2, "0")}-${lastDay}`;
 
-      query.date = { $gte: start, $lte: end };
+      const { startOfDay } = getDayBoundariesInUTC(firstDay, clientTimezone);
+      const { endOfDay } = getDayBoundariesInUTC(lastDayStr, clientTimezone);
+
+      query.date = { $gte: startOfDay, $lte: endOfDay };
     } else if (filterType === "upcoming" || filterType === "completed") {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const currentTime = getCurrentTimeInTimezone(clientTimezone);
+      const { startOfDay } = getDayBoundariesInUTC(
+        currentTime.date,
+        clientTimezone,
+      );
 
-      if (filterType === "upcoming") query.date = { $gte: today };
-
-      if (filterType === "completed") query.date = { $lt: today };
+      if (filterType === "upcoming") {
+        query.date = { $gte: startOfDay };
+      } else {
+        query.date = { $lt: startOfDay };
+      }
     }
+
     if (status) {
       query.status = status;
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (filterType === "upcoming") {
-      query.date = { ...query.date, $gte: today };
-    } else if (filterType === "completed") {
-      query.date = { ...query.date, $lt: today };
     }
 
     const total = await BookingModel.countDocuments(query);
@@ -946,17 +1268,30 @@ export const getWorkerBookings = async (req: any, res: Response) => {
       .skip(skip)
       .limit(limit);
 
-    const groupedByDate = bookings.reduce((acc: any, booking: any) => {
-      const day = booking.date.toISOString().split("T")[0];
-      if (!acc[day]) acc[day] = [];
-      acc[day].push(booking);
-      return acc;
-    }, {});
+    // Convert UTC dates back to client timezone for display
+    const bookingsWithClientTime = bookings.map((booking: any) => {
+      const bookingObj = booking.toObject();
+      const clientDateTime = convertFromUTC(booking.date, clientTimezone);
+      bookingObj.displayDate = clientDateTime.date;
+      bookingObj.clientTimezone = clientTimezone;
+      return bookingObj;
+    });
+
+    const groupedByDate = bookingsWithClientTime.reduce(
+      (acc: any, booking: any) => {
+        const day = booking.displayDate;
+        if (!acc[day]) acc[day] = [];
+        acc[day].push(booking);
+        return acc;
+      },
+      {},
+    );
 
     res.status(200).json({
       message: "Worker bookings fetched successfully",
       month,
       year,
+      timezone: clientTimezone,
       data: groupedByDate,
       pagination: {
         total: total,
@@ -1101,6 +1436,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
 export const getCustomerBookings = async (req: any, res: Response) => {
   try {
     const customerId = req.user.userId;
+    const clientTimezone = getClientTimezone(req);
 
     const customer = await CustomerModel.findById(customerId);
     if (!customer) {
@@ -1114,36 +1450,40 @@ export const getCustomerBookings = async (req: any, res: Response) => {
 
     const month = parseInt(req.query.month);
     const year = parseInt(req.query.year);
-    const status = req.query.status; // "booked" | "completed"
-    const filterType = req.query.filter; // "upcoming" | "completed"
+    const status = req.query.status;
+    const filterType = req.query.filter;
 
     const query: any = {
       customer: customerId,
     };
 
-    // ✅ Default: only booked & completed
     if (!status) {
       query.status = { $in: ["booked", "completed"] };
     } else {
-      // ✅ Explicit filter
       query.status = status;
     }
 
-    // Date filter (month/year)
     if (month && year) {
-      const startDate = new Date(year, month - 1, 1);
-      const endDate = new Date(year, month, 0, 23, 59, 59);
-      query.date = { $gte: startDate, $lte: endDate };
+      const firstDay = `${year}-${month.toString().padStart(2, "0")}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const lastDayStr = `${year}-${month.toString().padStart(2, "0")}-${lastDay}`;
+
+      const { startOfDay } = getDayBoundariesInUTC(firstDay, clientTimezone);
+      const { endOfDay } = getDayBoundariesInUTC(lastDayStr, clientTimezone);
+
+      query.date = { $gte: startOfDay, $lte: endOfDay };
     }
 
-    // Upcoming / completed based on date (optional)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const currentTime = getCurrentTimeInTimezone(clientTimezone);
+    const { startOfDay: todayStart } = getDayBoundariesInUTC(
+      currentTime.date,
+      clientTimezone,
+    );
 
     if (filterType === "upcoming") {
-      query.date = { ...query.date, $gte: today };
+      query.date = { ...query.date, $gte: todayStart };
     } else if (filterType === "completed") {
-      query.date = { ...query.date, $lt: today };
+      query.date = { ...query.date, $lt: todayStart };
     }
 
     const total = await BookingModel.countDocuments(query);
@@ -1164,31 +1504,30 @@ export const getCustomerBookings = async (req: any, res: Response) => {
       .skip(skip)
       .limit(limit);
 
-    const groupedByDate = bookings.reduce((acc: any, booking: any) => {
-      const day = booking.date.toISOString().split("T")[0];
-      if (!acc[day]) acc[day] = [];
-      acc[day].push(booking);
-      return acc;
-    }, {});
-
-    console.log("====================");
-    console.log({
-      message: "Customer bookings fetched successfully",
-      month,
-      year,
-      data: groupedByDate,
-      pagination: {
-        total: total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+    // Convert UTC dates to client timezone
+    const bookingsWithClientTime = bookings.map((booking: any) => {
+      const bookingObj = booking.toObject();
+      const clientDateTime = convertFromUTC(booking.date, clientTimezone);
+      bookingObj.displayDate = clientDateTime.date;
+      bookingObj.clientTimezone = clientTimezone;
+      return bookingObj;
     });
+
+    const groupedByDate = bookingsWithClientTime.reduce(
+      (acc: any, booking: any) => {
+        const day = booking.displayDate;
+        if (!acc[day]) acc[day] = [];
+        acc[day].push(booking);
+        return acc;
+      },
+      {},
+    );
 
     res.status(200).json({
       message: "Customer bookings fetched successfully",
       month,
       year,
+      timezone: clientTimezone,
       data: groupedByDate,
       pagination: {
         total: total,
