@@ -28,6 +28,17 @@ export const getClientTimezone = (req: any): string => {
   );
 };
 
+function convertTo12Hour(time24: string): string {
+  const [hourStr, minutes] = time24.split(":");
+  let hours = parseInt(hourStr);
+  const modifier = hours >= 12 ? "PM" : "AM";
+
+  if (hours === 0) hours = 12;
+  else if (hours > 12) hours -= 12;
+
+  return `${hours}:${minutes} ${modifier}`;
+}
+
 function convertTo24Hour(time12h: string) {
   const [time, modifier] = time12h.trim().split(" ");
   let [hours, minutes] = time.split(":").map(Number);
@@ -369,57 +380,82 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
           <p>You have received a new booking. Please review the details below:</p>
           
           <div class="booking-card">
-            <h3 style="margin-top: 0; color: #667eea;">📋 Booking Details</h3>
-            
-            <div class="info-row">
-              <div class="info-label">Booking ID:</div>
-              <div class="info-value">#${bookingId}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Customer:</div>
-              <div class="info-value">${customer.firstName} ${customer.lastName}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Phone:</div>
-              <div class="info-value">${customer.phone || "Not provided"}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">Email:</div>
-              <div class="info-value">${customer.email}</div>
-            </div>
-            
-            <div class="info-row">
-              <div class="info-label">📅 Date:</div>
-              <div class="info-value">${new Date(
+            <h3 style="margin-top: 0; color: #667eea;">Booking Details</h3>
+
+             <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(
                 booking.date,
               ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
-              })}</div>
+              })}</span>
             </div>
-            
+
             <div class="info-row">
-              <div class="info-label">🕐 Time:</div>
-              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
+
             </div>
-            
+
+
             <div class="info-row">
-              <div class="info-label">📍 Location:</div>
-              <div class="info-value">
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
+            </div>
+
+            <div class="info-row">
+              <div class="info-label">Customer:</div>
+              <span class="info-value">${customer.firstName} ${customer.lastName}</span>
+            </div>
+
+
+            <div class="info-row">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
                 ${customer.address}<br>
                 ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
-              </div>
+              </span>
             </div>
+
+
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${customer.phone || "Not provided"}</span>
+            </div>
+
+            
+            
             
             <div class="info-row">
-              <div class="info-label">💰 Amount:</div>
-              <div class="info-value">$${booking.paymentAmount?.toFixed(2)}</div>
+              <div class="info-label">Booking ID:</div>
+              <span class="info-value">#${bookingId}</span>
             </div>
+
+
+            
+            
+          
+            
+            
+            
+            // <div class="info-row">
+            //   <div class="info-label">Email:</div>
+            //   <span class="info-value">${customer.email}</span>
+            // </div>
+            
+           
+            
+           
+            
+            // <div class="info-row">
+            //   <div class="info-label">💰 Amount:</div>
+            //   <span class="info-value">$${booking.paymentAmount?.toFixed(2)}</span>
+            // </div>
           </div>
           
           
@@ -558,51 +594,66 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
           
           <div class="booking-card">
             <h3 style="margin-top: 0; color: #28a745;">📋 Your Booking Summary</h3>
-            
+
+
             <div class="info-row">
-              <div class="info-label">Confirmation #:</div>
-              <div class="info-value"><strong>#${bookingId}</strong></div>
+              <div class="info-label">Worker:</div>
+              <span class="info-value">${worker.firstName} ${worker.lastName}</span>
             </div>
-            
+
             <div class="info-row">
-              <div class="info-label">Professional:</div>
-              <div class="info-value">${worker.firstName} ${worker.lastName}</div>
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
             </div>
-            
-            <div class="info-row">
-              <div class="info-label">📅 Date:</div>
-              <div class="info-value">${new Date(
+
+
+              <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(
                 booking.date,
               ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
-              })}</div>
+              })}</span>
             </div>
             
             <div class="info-row">
-              <div class="info-label">🕐 Time:</div>
-              <div class="info-value">${booking.startTime} - ${booking.endTime}</div>
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
             </div>
             
             <div class="info-row">
-              <div class="info-label">📍 Location:</div>
-              <div class="info-value">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
                 ${customer.address}<br>
                 ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
-              </div>
+              </span>
             </div>
-            
-            <div class="info-row">
-              <div class="info-label">💳 Amount Paid:</div>
-              <div class="info-value"><strong>$${booking.paymentAmount?.toFixed(2)}</strong></div>
+
+             <div class="info-row">
+              <div class="info-label">Amount Paid:</div>
+              <span class="info-value"><strong>$${booking.paymentAmount?.toFixed(2)}</strong></span>
             </div>
             
             <div class="info-row">
               <div class="info-label">Payment Status:</div>
               <div class="info-value"><span style="color: #28a745; font-weight: 600;">✓ Confirmed</span></div>
             </div>
+            
+            <div class="info-row">
+              <div class="info-label">Confirmation #:</div>
+              <span class="info-value"><strong>#${bookingId}</strong></span>
+            </div>
+            
+            
+            
+          
+            
+           
           </div>
           
          
@@ -611,6 +662,248 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
     </html>
   `,
     });
+
+
+    // Email to Admin
+await transporter.sendMail({
+  from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
+  to: process.env.ADMIN_EMAIL_MAIL,
+  subject: "🔔 New Booking Alert!",
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          line-height: 1.6;
+          color: #333;
+          margin: 0;
+          padding: 0;
+          background-color: #f4f4f4;
+        }
+        .container {
+          max-width: 600px;
+          margin: 20px auto;
+          background-color: #ffffff;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+          background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+          color: #ffffff;
+          padding: 30px;
+          text-align: center;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 24px;
+          font-weight: 600;
+        }
+        .badge {
+          display: inline-block;
+          background-color: rgba(255,255,255,0.2);
+          padding: 5px 15px;
+          border-radius: 20px;
+          font-size: 13px;
+          margin-top: 8px;
+        }
+        .content {
+          padding: 30px;
+        }
+        .section-title {
+          font-size: 13px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          color: #6c757d;
+          margin: 25px 0 10px 0;
+          padding-bottom: 6px;
+          border-bottom: 2px solid #f0f0f0;
+        }
+        .booking-card {
+          background-color: #f8f9fa;
+          border-left: 4px solid #f5576c;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .info-row {
+          display: flex;
+          padding: 8px 0;
+          border-bottom: 1px solid #e9ecef;
+        }
+        .info-row:last-child {
+          border-bottom: none;
+        }
+        .info-label {
+          font-weight: 600;
+          color: #495057;
+          min-width: 140px;
+        }
+        .info-value {
+          color: #212529;
+        }
+        .customer-card {
+          background-color: #fff8f0;
+          border-left: 4px solid #fd7e14;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .worker-card {
+          background-color: #f0f7ff;
+          border-left: 4px solid #007bff;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .payment-card {
+          background-color: #f0fff4;
+          border-left: 4px solid #28a745;
+          padding: 20px;
+          margin: 10px 0 20px 0;
+          border-radius: 4px;
+        }
+        .amount {
+          font-size: 28px;
+          font-weight: 700;
+          color: #28a745;
+        }
+        .footer {
+          background-color: #f8f9fa;
+          padding: 20px;
+          text-align: center;
+          font-size: 12px;
+          color: #6c757d;
+          border-top: 1px solid #e9ecef;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+
+        <div class="header">
+          <h1>🔔 New Booking Received</h1>
+          <div class="badge">Booking ID: #${bookingId}</div>
+        </div>
+
+        <div class="content">
+
+          <p style="color: #6c757d; font-size: 14px; margin-bottom: 0;">
+            A new booking was just confirmed on 
+            <strong>${new Date().toLocaleDateString("en-US", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}</strong>
+          </p>
+
+          <!-- Booking Details -->
+          <div class="section-title">📅 Booking Details</div>
+          <div class="booking-card">
+            <div class="info-row">
+              <div class="info-label">Date:</div>
+              <span class="info-value">${new Date(booking.date).toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Time:</div>
+              <span class="info-value">${convertTo12Hour(booking.startTime)} - ${convertTo12Hour(booking.endTime)}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Services:</div>
+              <span class="info-value">${booking.services
+                .map((service) => (service.service as any).serviceName)
+                .join(", ")}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Status:</div>
+              <span class="info-value" style="color: #28a745; font-weight: 600;">✓ Booked</span>
+            </div>
+          </div>
+
+          <!-- Customer Info -->
+          <div class="section-title">👤 Customer Info</div>
+          <div class="customer-card">
+            <div class="info-row">
+              <div class="info-label">Name:</div>
+              <span class="info-value">${customer.firstName} ${customer.lastName}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${customer.email}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${customer.phone || "Not provided"}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
+                ${customer.address}<br>
+                ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
+              </span>
+            </div>
+          </div>
+
+          <!-- Worker Info -->
+          <div class="section-title">💼 Worker Info</div>
+          <div class="worker-card">
+            <div class="info-row">
+              <div class="info-label">Name:</div>
+              <span class="info-value">${worker.firstName} ${worker.lastName}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${worker.email}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${worker.phone || "Not provided"}</span>
+            </div>
+          </div>
+
+          <!-- Payment Info -->
+          <div class="section-title">💰 Payment Info</div>
+          <div class="payment-card">
+            <div class="info-row">
+              <div class="info-label">Amount:</div>
+              <span class="info-value amount">$${booking.paymentAmount?.toFixed(2)}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Transaction ID:</div>
+              <span class="info-value" style="font-size: 12px; color: #6c757d;">${booking.transactionId || "N/A"}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Payment Status:</div>
+              <span class="info-value" style="color: #28a745; font-weight: 600;">✓ Paid</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="footer">
+          <p>In Home Beauty Services — Admin Notification System</p>
+          <p style="margin: 0;">This is an automated message. Do not reply.</p>
+        </div>
+
+      </div>
+    </body>
+    </html>
+  `,
+});
+
 
     console.log("✅ Confirmation emails sent");
     console.log("✅ Booking confirmed:", {
