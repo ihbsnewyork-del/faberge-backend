@@ -644,13 +644,12 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
   `,
     });
 
-
     // Email to Admin
-await transporter.sendMail({
-  from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
-  to: process.env.ADMIN_EMAIL_MAIL,
-  subject: "🔔 New Booking Alert!",
-  html: `
+    await transporter.sendMail({
+      from: '"In Home Beauty Services" <noreply@inhomebeautyservices.com>',
+      to: process.env.ADMIN_EMAIL_MAIL,
+      subject: "🔔 New Booking Alert!",
+      html: `
     <!DOCTYPE html>
     <html>
     <head>
@@ -791,7 +790,9 @@ await transporter.sendMail({
           <div class="booking-card">
             <div class="info-row">
               <div class="info-label">Date:</div>
-              <span class="info-value">${new Date(booking.date).toLocaleDateString("en-US", {
+              <span class="info-value">${new Date(
+                booking.date,
+              ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
@@ -883,8 +884,7 @@ await transporter.sendMail({
     </body>
     </html>
   `,
-});
-
+    });
 
     console.log("✅ Confirmation emails sent");
     console.log("✅ Booking confirmed:", {
@@ -1229,17 +1229,21 @@ export const getWorkerBookings = async (req: any, res: Response) => {
 
     if (status) {
       query.status = status;
+    } else {
+      query.status = { $nin: ["cancelled", "expired", "pending"] };
     }
 
     const total = await BookingModel.countDocuments(query);
     const bookings = await BookingModel.find(query)
       .populate({
         path: "customer",
-        select: "firstName lastName email phone uploadPhoto address",
+        select:
+          "firstName lastName email phone uploadPhoto address zipCode city state",
       })
       .populate({
         path: "worker",
-        select: "firstName lastName email phone uploadPhoto address",
+        select:
+          "firstName lastName email phone uploadPhoto address zipCode city state",
       })
       .populate({
         path: "services.service",
@@ -1471,11 +1475,13 @@ export const getCustomerBookings = async (req: any, res: Response) => {
     const bookings = await BookingModel.find(query)
       .populate({
         path: "worker",
-        select: "firstName lastName email phone uploadPhoto",
+        select:
+          "firstName lastName email phone uploadPhoto address city state zipCode",
       })
       .populate({
         path: "customer",
-        select: "firstName lastName email phone uploadPhoto",
+        select:
+          "firstName lastName email phone uploadPhoto address city state zipCode",
       })
       .populate({
         path: "services.service",
