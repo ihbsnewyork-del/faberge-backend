@@ -6,7 +6,7 @@ import { seedAdmin } from "./config/seedAdmin";
 import { startCleanupScheduler } from "./modules/booking/booking.controller";
 import fs from "fs";
 import https from "https";
-// import http from "http";
+import http from "http";
 
 connectDB().then(async () => {
   await seedAdmin();
@@ -20,8 +20,8 @@ connectDB().then(async () => {
   };
 
   // Create an HTTPS server
-  // const server = http.createServer(app);
-  const server = https.createServer(options, app);
+  const server = http.createServer(app);
+  // const server = https.createServer(options, app);
 
   server.listen(PORT, () => {
     console.log(`Server running at ${HOST}:${PORT}`);
