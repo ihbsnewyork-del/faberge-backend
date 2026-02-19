@@ -815,21 +815,15 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
             </div>
           </div>
 
-          <!-- Customer Info -->
+
+             <!-- Customer Info -->
           <div class="section-title">👤 Customer Info</div>
           <div class="customer-card">
             <div class="info-row">
               <div class="info-label">Name:</div>
               <span class="info-value">${customer.firstName} ${customer.lastName}</span>
             </div>
-            <div class="info-row">
-              <div class="info-label">Email:</div>
-              <span class="info-value">${customer.email}</span>
-            </div>
-            <div class="info-row">
-              <div class="info-label">Phone:</div>
-              <span class="info-value">${customer.phone || "Not provided"}</span>
-            </div>
+
             <div class="info-row">
               <div class="info-label">Location:</div>
               <span class="info-value">
@@ -837,7 +831,18 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
                 ${customer.city}, ${customer.state}${customer.zipCode ? " " + customer.zipCode : ""}
               </span>
             </div>
+            
+            <div class="info-row">
+              <div class="info-label">Phone:</div>
+              <span class="info-value">${customer.phone || "Not provided"}</span>
+            </div>
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${customer.email}</span>
+            </div>
           </div>
+
+       
 
           <!-- Worker Info -->
           <div class="section-title">💼 Worker Info</div>
@@ -847,13 +852,28 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
               <span class="info-value">${worker.firstName} ${worker.lastName}</span>
             </div>
             <div class="info-row">
-              <div class="info-label">Email:</div>
-              <span class="info-value">${worker.email}</span>
+              <div class="info-label">ID:</div>
+              <span class="info-value">${worker.workerId}</span>
             </div>
+            <div class="info-row">
+              <div class="info-label">Location:</div>
+              <span class="info-value">
+                ${worker.address}<br>
+                ${worker.city}, ${worker.state}${worker.zipCode ? " " + worker.zipCode : ""}
+              </span>
+            </div>
+            
+
             <div class="info-row">
               <div class="info-label">Phone:</div>
               <span class="info-value">${worker.phone || "Not provided"}</span>
             </div>
+
+            <div class="info-row">
+              <div class="info-label">Email:</div>
+              <span class="info-value">${worker.email}</span>
+            </div>
+          
           </div>
 
           <!-- Payment Info -->
@@ -863,14 +883,17 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
               <div class="info-label">Amount:</div>
               <span class="info-value amount">$${booking.paymentAmount?.toFixed(2)}</span>
             </div>
-            <div class="info-row">
-              <div class="info-label">Transaction ID:</div>
-              <span class="info-value" style="font-size: 12px; color: #6c757d;">${booking.transactionId || "N/A"}</span>
-            </div>
+
             <div class="info-row">
               <div class="info-label">Payment Status:</div>
               <span class="info-value" style="color: #28a745; font-weight: 600;">✓ Paid</span>
             </div>
+
+            <div class="info-row">
+              <div class="info-label">Transaction ID:</div>
+              <span class="info-value" style="font-size: 12px; color: #6c757d;">${booking.transactionId || "N/A"}</span>
+            </div>
+            
           </div>
 
         </div>
