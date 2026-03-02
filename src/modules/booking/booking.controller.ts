@@ -1320,6 +1320,124 @@ export const getWorkerBookings = async (req: any, res: Response) => {
 // --------------------
 // Get Worker Monthly Calendar
 // --------------------
+// export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
+//   try {
+//     const workerId = req.params.workerId;
+
+//     const worker = await WorkerModel.findById(workerId);
+//     if (!worker) {
+//       res.status(404).json({ message: "Worker not found" });
+//       return;
+//     }
+
+//     const year = parseInt(req.query.year);
+//     const month = parseInt(req.query.month);
+
+//     if (!year || !month || month < 1 || month > 12) {
+//       res.status(400).json({ message: "Valid year and month are required" });
+//       return;
+//     }
+
+//     const startDate = new Date(year, month - 1, 1, 0, 0, 0);
+//     const endDate = new Date(year, month, 0, 23, 59, 59);
+
+//     const daysInMonth = new Date(year, month, 0).getDate();
+
+//     const getDateKey = (d: Date) => {
+//       return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+//         .toISOString()
+//         .split("T")[0];
+//     };
+
+//     const timeSlots = await TimeSlotModel.find({
+//       worker: workerId,
+//       date: { $gte: startDate, $lte: endDate },
+//     });
+
+//     const bookings = await BookingModel.find({
+//       worker: workerId,
+//       date: { $gte: startDate, $lte: endDate },
+//     });
+
+//     const timeSlotMap = new Map();
+//     const bookingCountMap = new Map();
+
+//     timeSlots.forEach((slot) => {
+//       const key = getDateKey(slot.date);
+//       timeSlotMap.set(key, slot);
+//     });
+
+//     bookings.forEach((booking) => {
+//       const key = getDateKey(booking.date);
+//       bookingCountMap.set(key, (bookingCountMap.get(key) || 0) + 1);
+//     });
+
+//     const calendarData: any[] = [];
+
+//     const today = new Date();
+//     today.setHours(0, 0, 0, 0);
+
+//     for (let day = 1; day <= daysInMonth; day++) {
+//       const currentDate = new Date(year, month - 1, day, 0, 0, 0);
+//       const dateKey = getDateKey(currentDate);
+
+//       const timeSlot = timeSlotMap.get(dateKey);
+//       const bookingCount = bookingCountMap.get(dateKey) || 0;
+
+//       let color = "";
+
+//       if (currentDate < today) {
+//         color = "bg-gray-200";
+//       } else if (timeSlot) {
+//         if (timeSlot.isOffDay) {
+//           color = "bg-red-500";
+//         } else {
+//           const totalSlots = timeSlot.slots.length;
+//           const bookedSlots = timeSlot.slots.filter(
+//             (s: any) => s.isBooked,
+//           ).length;
+
+//           if (bookedSlots === totalSlots) {
+//             color = "bg-gray-400"; // fully booked
+//           } else if (bookedSlots > 0) {
+//             color = "bg-green-500"; // available
+//           } else {
+//             color = "bg-white";
+//           }
+//         }
+//       } else {
+//         color = "bg-white"; // No timeslot created
+//       }
+
+//       calendarData.push({
+//         date: dateKey,
+//         day,
+//         color,
+//         isOffDay: timeSlot?.isOffDay || false,
+//         totalBookings: bookingCount,
+//         availableSlots: timeSlot
+//           ? timeSlot.slots.filter(
+//               (s: any) => s.isAvailable && !s.isBooked && !s.isBlocked,
+//             ).length
+//           : generateDefaultSlots().length,
+//       });
+//     }
+
+//     res.status(200).json({
+//       message: "Worker monthly calendar fetched successfully",
+//       year,
+//       month,
+//       data: calendarData,
+//     });
+//   } catch (err: any) {
+//     console.error("Error fetching worker monthly calendar:", err);
+//     res.status(500).json({
+//       message: "Error fetching worker monthly calendar",
+//       error: err.message,
+//     });
+//   }
+// };
+
 export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
   try {
     const workerId = req.params.workerId;
@@ -1332,21 +1450,32 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
 
     const year = parseInt(req.query.year);
     const month = parseInt(req.query.month);
+    const clientTimezone = getClientTimezone(req); // ✅ ADD THIS
 
     if (!year || !month || month < 1 || month > 12) {
       res.status(400).json({ message: "Valid year and month are required" });
       return;
     }
 
-    const startDate = new Date(year, month - 1, 1, 0, 0, 0);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    // ✅ CHANGED: Expand range by 1 day on each side to catch timezone boundary dates
+    const startDate = new Date(
+      Date.UTC(year, month - 1, 1) - 24 * 60 * 60 * 1000,
+    );
+    const endDate = new Date(
+      Date.UTC(year, month, 0, 23, 59, 59) + 24 * 60 * 60 * 1000,
+    );
 
     const daysInMonth = new Date(year, month, 0).getDate();
 
+    // ✅ CHANGED: Use client timezone to convert UTC dates to local dates
     const getDateKey = (d: Date) => {
-      return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-        .toISOString()
-        .split("T")[0];
+      const localDate = new Date(
+        d.toLocaleString("en-US", { timeZone: clientTimezone }),
+      );
+      const y = localDate.getFullYear();
+      const m = String(localDate.getMonth() + 1).padStart(2, "0");
+      const day = String(localDate.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
     };
 
     const timeSlots = await TimeSlotModel.find({
@@ -1374,19 +1503,20 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
 
     const calendarData: any[] = [];
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // ✅ CHANGED: Use client timezone for today comparison
+    const todayKey = getDateKey(new Date());
 
     for (let day = 1; day <= daysInMonth; day++) {
-      const currentDate = new Date(year, month - 1, day, 0, 0, 0);
-      const dateKey = getDateKey(currentDate);
+      // ✅ CHANGED: Build dateKey from year/month/day directly (no Date object needed)
+      const dateKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
       const timeSlot = timeSlotMap.get(dateKey);
       const bookingCount = bookingCountMap.get(dateKey) || 0;
 
       let color = "";
 
-      if (currentDate < today) {
+      // ✅ CHANGED: Compare string keys instead of Date objects
+      if (dateKey < todayKey) {
         color = "bg-gray-200";
       } else if (timeSlot) {
         if (timeSlot.isOffDay) {
@@ -1400,7 +1530,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
           if (bookedSlots === totalSlots) {
             color = "bg-gray-400"; // fully booked
           } else if (bookedSlots > 0) {
-            color = "bg-green-500"; // available
+            color = "bg-green-500"; // partially booked
           } else {
             color = "bg-white";
           }
@@ -1427,6 +1557,7 @@ export const getWorkerMonthlyCalendar = async (req: any, res: Response) => {
       message: "Worker monthly calendar fetched successfully",
       year,
       month,
+      timezone: clientTimezone, // ✅ ADD THIS for debugging
       data: calendarData,
     });
   } catch (err: any) {

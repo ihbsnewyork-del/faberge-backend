@@ -1,8 +1,9 @@
 node_modules/
-.env
 picture/
 
 cert.pem
 key.pem
 faberge.pem
 dist/
+.gitignore
+config.bat
