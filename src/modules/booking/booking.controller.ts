@@ -19,6 +19,145 @@ import {
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
+const roundMoney = (n: number) => Math.round(n * 100) / 100;
+
+// --------------------
+// Scheduling helpers
+// --------------------
+// Slots are fixed 30-minute chunks; a service may span multiple consecutive slots.
+// Every booking also blocks an additional 1-hour buffer AFTER its end time so the
+// worker has travel/cleanup time between appointments.
+export const SLOT_DURATION_MIN = 30;
+export const BUFFER_MINUTES = 60;
+
+export const toMinutes = (hhmm: string): number => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+};
+
+export const minutesToHHMM = (mins: number): string => {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+};
+
+// How many 30-min slots a given duration occupies (rounded up).
+export const durationToSlotCount = (durationMinutes: number): number =>
+  Math.max(1, Math.ceil(durationMinutes / SLOT_DURATION_MIN));
+
+// Returns true if the slot is currently held by an OTHER booking whose hold has
+// not yet expired. Used so an expired hold doesn't falsely block a new booking.
+const isLiveHoldByOther = (slot: any, ownBookingId: any): boolean => {
+  if (!slot.heldUntil || !slot.heldBy) return false;
+  if (ownBookingId && slot.heldBy.toString() === ownBookingId.toString())
+    return false;
+  return new Date() < new Date(slot.heldUntil);
+};
+
+// Returns the set of slot indices already occupied by THIS customer's other
+// active bookings (pending or booked) on this worker+date. We split into
+// duration vs buffer so the validator can relax overlap rules for "mine":
+//   - new duration may overlap MY buffer (back-to-back same-customer is fine)
+//   - new buffer may overlap any of MY ranges (mine doesn't block mine)
+// new duration may NOT overlap MY duration (no double-booking myself).
+const getCustomerOccupiedIndices = async (
+  customerId: any,
+  workerId: any,
+  startOfDay: Date,
+  endOfDay: Date,
+  slots: any[],
+): Promise<{ myDuration: Set<number>; myBuffer: Set<number> }> => {
+  const myDuration = new Set<number>();
+  const myBuffer = new Set<number>();
+
+  const myBookings = await BookingModel.find({
+    customer: customerId,
+    worker: workerId,
+    date: { $gte: startOfDay, $lte: endOfDay },
+    status: { $in: ["pending", "booked"] },
+  });
+
+  const bufferSlotCount = durationToSlotCount(BUFFER_MINUTES);
+
+  for (const b of myBookings) {
+    const startIdx = slots.findIndex((s: any) => s.startTime === b.startTime);
+    if (startIdx < 0) continue;
+    const dur = (b as any).durationMinutes || SLOT_DURATION_MIN;
+    const durationSlots = durationToSlotCount(dur);
+
+    for (
+      let i = startIdx;
+      i < startIdx + durationSlots && i < slots.length;
+      i++
+    ) {
+      myDuration.add(i);
+    }
+    for (
+      let i = startIdx + durationSlots;
+      i < startIdx + durationSlots + bufferSlotCount && i < slots.length;
+      i++
+    ) {
+      myBuffer.add(i);
+    }
+  }
+
+  return { myDuration, myBuffer };
+};
+
+
+// --------------------
+// Role-based booking projection
+// --------------------
+// The spec dictates strict per-role financial visibility:
+//   - worker:   sees only own earnings (subtotal). NO agency fee, NO total.
+//   - customer: sees only the total. NO agency fee, NO subtotal breakdown.
+//   - admin/manager: sees the full breakdown (subtotal, agency fee, total, worker earnings).
+// We project at the response layer (rather than storage) so the booking always
+// keeps a complete record for admin/audit.
+export type ViewerRole = "worker" | "customer" | "admin" | "manager";
+
+export const projectBookingForRole = (booking: any, role: ViewerRole): any => {
+  if (!booking) return booking;
+  const obj = booking.toObject ? booking.toObject() : { ...booking };
+  const breakdown = obj.priceBreakdown || {};
+  const subtotal = breakdown.subtotal ?? 0;
+  const agencyFee = breakdown.agencyFee ?? 0;
+  const total = breakdown.total ?? obj.paymentAmount ?? 0;
+
+  if (role === "worker") {
+    delete obj.priceBreakdown;
+    delete obj.paymentAmount;
+    delete obj.transactionId;
+    obj.workerEarnings = subtotal;
+    return obj;
+  }
+
+  if (role === "customer") {
+    obj.priceBreakdown = { total };
+    obj.paymentAmount = total;
+    return obj;
+  }
+
+  // admin / manager — full breakdown plus derived worker/admin earnings.
+  obj.priceBreakdown = { subtotal, agencyFee, total };
+  obj.workerEarnings = subtotal;
+  obj.adminEarnings = roundMoney(agencyFee);
+  return obj;
+};
+
+// Apply the projection across a grouped-by-date map (the shape returned by
+// getWorkerBookings / getCustomerBookings).
+const projectGroupedBookings = (
+  groupedByDate: Record<string, any[]>,
+  role: ViewerRole,
+) => {
+  const out: Record<string, any[]> = {};
+  for (const day of Object.keys(groupedByDate)) {
+    out[day] = groupedByDate[day].map((b) => projectBookingForRole(b, role));
+  }
+  return out;
+};
+
 export const getClientTimezone = (req: any): string => {
   return (
     req.headers["x-timezone"] ||
@@ -58,32 +197,50 @@ function convertTo24Hour(time12h: string) {
 // --------------------
 // Payment Method
 // --------------------
-const calculateTotalPrice = async (booking: any) => {
-  let total = 0;
+// Computes a full price breakdown and total duration for a booking's services array.
+// - subtotal:  sum of service.price + selected subcategory prices (worker earnings basis)
+// - agencyFee: sum of agencyFee on each selected service (admin take, on top of subtotal)
+// - total:     subtotal + agencyFee (what the customer pays). Stripe Tax handles
+//              sales tax separately at checkout, so we don't store/charge tax here.
+// - durationMinutes: sum of each service's serviceDuration (used by scheduler)
+export const computeBookingBreakdown = async (
+  services: Array<{ service: any; subcategories?: any[] }>,
+) => {
+  let subtotal = 0;
+  let agencyFee = 0;
+  let durationMinutes = 0;
 
-  for (const srv of booking.services) {
+  for (const srv of services) {
     const serviceDoc = await ServiceModel.findById(srv.service);
     if (!serviceDoc) {
       console.warn(`Service ${srv.service} not found`);
       continue;
     }
 
-    total += serviceDoc.price;
+    subtotal += serviceDoc.price || 0;
+    agencyFee += serviceDoc.agencyFee || 0;
+    durationMinutes += serviceDoc.serviceDuration || 0;
 
     if (srv.subcategories && srv.subcategories.length > 0) {
       for (const subId of srv.subcategories) {
         const sub = serviceDoc.subcategory?.find(
           (s: any) => s._id.toString() === subId.toString(),
         );
-        if (sub) {
-          total += sub.subcategoryPrice;
-        }
+        if (sub) subtotal += sub.subcategoryPrice || 0;
       }
     }
   }
 
-  return total;
+  const total = roundMoney(subtotal + agencyFee);
+
+  return {
+    subtotal: roundMoney(subtotal),
+    agencyFee: roundMoney(agencyFee),
+    total,
+    durationMinutes,
+  };
 };
+
 export const initializePayment = async (req: any, res: Response) => {
   try {
     const { bookingId } = req.body;
@@ -111,7 +268,31 @@ export const initializePayment = async (req: any, res: Response) => {
       return;
     }
 
-    const amount = await calculateTotalPrice(booking);
+    // Use the breakdown already stored on the booking when it was created,
+    // falling back to recompute defensively for legacy bookings.
+    let breakdown =
+      (booking as any).priceBreakdown && (booking as any).priceBreakdown.total
+        ? (booking as any).priceBreakdown
+        : null;
+    if (!breakdown || !breakdown.total) {
+      const recomputed = await computeBookingBreakdown(booking.services as any);
+      breakdown = {
+        subtotal: recomputed.subtotal,
+        agencyFee: recomputed.agencyFee,
+        total: recomputed.total,
+      };
+      (booking as any).priceBreakdown = breakdown;
+      if (!(booking as any).durationMinutes) {
+        (booking as any).durationMinutes = recomputed.durationMinutes;
+      }
+      await booking.save();
+    }
+
+    const amount = breakdown.total;
+    if (!amount || amount <= 0) {
+      res.status(400).json({ message: "Invalid booking total amount" });
+      return;
+    }
 
     const metadata = {
       bookingId: booking._id.toString(),
@@ -119,25 +300,33 @@ export const initializePayment = async (req: any, res: Response) => {
       workerId: workerId.toString(),
     };
 
+    // One line item for the full amount (subtotal + agency fee bundled, fee is
+    // invisible to the customer per spec). Stripe Tax handles sales tax at checkout.
+    const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
+      {
+        price_data: {
+          currency,
+          product_data: { name: "Total Price" },
+          unit_amount: Math.round(amount * 100),
+        },
+        quantity: 1,
+      },
+    ];
+
     const session = await stripe.checkout.sessions.create({
       customer_email: customer.email,
       payment_method_types: ["card"],
       mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency,
-            product_data: { name: "Total Price" },
-            unit_amount: amount * 100,
-          },
-          quantity: 1,
-        },
-      ],
+      line_items: lineItems,
       metadata,
       success_url,
       cancel_url,
     });
-    res.json({ url: session?.url, totalAmount: amount });
+    res.json({
+      url: session?.url,
+      totalAmount: amount,
+      breakdown,
+    });
   } catch (err: any) {
     console.error(err);
     res
@@ -236,24 +425,40 @@ const handleSuccessfulPayment = async (session: Stripe.Checkout.Session) => {
       return;
     }
 
-    // Confirm the slot booking
+    // Confirm every slot tagged with this booking. Duration slots become booked;
+    // buffer slots stay blocked (so neighboring bookings can't claim them).
     const timeSlotDoc = await TimeSlotModel.findOne({
       worker: booking.worker,
       date: booking.date,
     });
 
     if (timeSlotDoc) {
-      const slot = timeSlotDoc.slots.find(
-        (s) => s.startTime === booking.startTime,
-      );
-
-      if (slot) {
-        slot.isBooked = true;
-        slot.isAvailable = false;
+      const bookingIdStr = (booking._id as any).toString();
+      const bookingStartMin = toMinutes(booking.startTime);
+      const bookingEndMin = toMinutes(booking.endTime);
+      let confirmed = 0;
+      for (const slot of timeSlotDoc.slots) {
+        if (!slot.heldBy || slot.heldBy.toString() !== bookingIdStr) continue;
+        const slotStartMin = toMinutes(slot.startTime);
+        const isWithinBooking =
+          slotStartMin >= bookingStartMin && slotStartMin < bookingEndMin;
+        if (isWithinBooking) {
+          slot.isBooked = true;
+          slot.isAvailable = false;
+          slot.isBlocked = false;
+        } else {
+          // Buffer slot — keep it blocked so other bookings can't overlap it.
+          slot.isBlocked = true;
+          slot.isAvailable = false;
+          slot.isBooked = false;
+        }
         slot.heldBy = null;
         slot.heldUntil = null;
+        confirmed++;
+      }
+      if (confirmed > 0) {
         await timeSlotDoc.save();
-        console.log("✅ Time slot confirmed as booked");
+        console.log(`✅ Confirmed ${confirmed} slot(s) as booked`);
       }
     }
 
@@ -926,7 +1131,6 @@ export const cleanupExpiredBookings = async () => {
   try {
     const now = new Date();
 
-    // Find all expired pending bookings
     const expiredBookings = await BookingModel.find({
       status: "pending",
       isPayment: false,
@@ -936,41 +1140,35 @@ export const cleanupExpiredBookings = async () => {
     console.log(`🧹 Cleaning up ${expiredBookings.length} expired bookings`);
 
     for (const booking of expiredBookings) {
-      // Update booking status to expired
       booking.status = "expired";
       await booking.save();
 
-      // Release the time slot
       const timeSlotDoc = await TimeSlotModel.findOne({
         worker: booking.worker,
         date: booking.date,
       });
 
-      if (timeSlotDoc) {
-        const slotIndex = timeSlotDoc.slots.findIndex(
-          (s) => s.startTime === booking.startTime,
-        );
+      if (!timeSlotDoc) continue;
 
-        if (slotIndex !== -1) {
-          const slot = timeSlotDoc.slots[slotIndex];
-
-          // Release the slot
+      // Release every slot we tagged with this booking — duration slots AND
+      // buffer slots. Cleared state is a fully-available slot.
+      const bookingIdStr = (booking._id as any).toString();
+      let released = 0;
+      for (const slot of timeSlotDoc.slots) {
+        if (slot.heldBy && slot.heldBy.toString() === bookingIdStr) {
           slot.isAvailable = true;
           slot.isBooked = false;
+          slot.isBlocked = false;
           slot.heldBy = null;
           slot.heldUntil = null;
-
-          // Unblock adjacent slots
-          const prevSlot = timeSlotDoc.slots[slotIndex - 1];
-          const nextSlot = timeSlotDoc.slots[slotIndex + 1];
-
-          if (prevSlot) prevSlot.isBlocked = false;
-          if (nextSlot) nextSlot.isBlocked = false;
-
-          await timeSlotDoc.save();
-
-          console.log(`✅ Released slot for booking: ${booking._id}`);
+          released++;
         }
+      }
+      if (released > 0) {
+        await timeSlotDoc.save();
+        console.log(
+          `✅ Released ${released} slot(s) for expired booking: ${booking._id}`,
+        );
       }
     }
 
@@ -1091,88 +1289,151 @@ export const bookTimeSlot = async (req: any, res: Response) => {
       return;
     }
 
-    const slot = timeSlotDoc.slots[slotIndex];
-    const now = new Date();
-
-    // Check if hold has expired
-    if (slot.heldUntil && now >= slot.heldUntil && !slot.isBooked) {
-      console.log(`🔓 Releasing expired hold on slot ${startTime}`);
-
-      slot.isAvailable = true;
-      slot.heldBy = null;
-      slot.heldUntil = null;
-
-      const prevSlot = timeSlotDoc.slots[slotIndex - 1];
-      const nextSlot = timeSlotDoc.slots[slotIndex + 1];
-
-      if (prevSlot && prevSlot.isBlocked) prevSlot.isBlocked = false;
-      if (nextSlot && nextSlot.isBlocked) nextSlot.isBlocked = false;
-
-      await timeSlotDoc.save();
-
-      if (slot.heldBy) {
-        await BookingModel.findByIdAndUpdate(slot.heldBy, {
-          status: "expired",
-        });
-      }
-    }
-
-    if (slot.heldUntil && now < slot.heldUntil) {
-      const remainingMinutes = Math.ceil(
-        (slot.heldUntil.getTime() - now.getTime()) / (1000 * 60),
-      );
-
-      res.status(400).json({
-        message: `Slot is temporarily held by another customer. Available in ${remainingMinutes} minute(s).`,
-        availableAt: slot.heldUntil,
-      });
-      return;
-    }
-
-    if (slot.isBooked) {
-      res.status(400).json({ message: "Slot is already booked" });
-      return;
-    }
-
-    if (slot.isBlocked) {
-      res.status(400).json({ message: "Slot is blocked" });
-      return;
-    }
-
-    if (!slot.isAvailable) {
-      res.status(400).json({ message: "Slot is not available" });
-      return;
-    }
-
     const formattedServices = services.map((srv: any) => ({
       service: srv.serviceId,
       subcategories: srv.serviceCategories || [],
     }));
 
+    // Compute price breakdown + total duration up front so they're locked in at
+    // booking time (and won't drift if a service is edited mid-payment-hold).
+    const breakdown = await computeBookingBreakdown(formattedServices as any);
+    const durationMinutes = breakdown.durationMinutes || SLOT_DURATION_MIN;
+
+    // Slot range math: how many 30-min slots the service occupies + buffer slots.
+    const durationSlots = durationToSlotCount(durationMinutes);
+    const bufferSlots = durationToSlotCount(BUFFER_MINUTES);
+
+    // Duration slots MUST exist on the day (no booking that runs past closing).
+    if (slotIndex + durationSlots > timeSlotDoc.slots.length) {
+      res.status(400).json({
+        message: "Not enough time before end of day to fit this service",
+      });
+      return;
+    }
+
+    // Same-customer relaxation: fetch THIS customer's other active bookings on
+    // this worker+date so we can let their own selections chain back-to-back.
+    const { myDuration: myDurationIdx, myBuffer: myBufferIdx } =
+      await getCustomerOccupiedIndices(
+        customerId,
+        workerId,
+        startOfDay,
+        endOfDay,
+        timeSlotDoc.slots,
+      );
+
+    // Walk the duration range and check feasibility. Surface a specific message
+    // so the UI can show "X already booked" / "blocked" instead of a generic error.
+    for (let i = slotIndex; i < slotIndex + durationSlots; i++) {
+      const s = timeSlotDoc.slots[i];
+      // Can't double-book myself in the same time window.
+      if (myDurationIdx.has(i)) {
+        res.status(400).json({
+          message: `You already have a booking that covers ${s.startTime}`,
+        });
+        return;
+      }
+      // My OWN buffer can overlap with my new duration (back-to-back is fine).
+      if (myBufferIdx.has(i)) continue;
+      if (s.isBooked) {
+        res
+          .status(400)
+          .json({ message: `Slot ${s.startTime} is already booked` });
+        return;
+      }
+      if (s.isBlocked) {
+        res
+          .status(400)
+          .json({ message: `Slot ${s.startTime} is blocked` });
+        return;
+      }
+      if (isLiveHoldByOther(s, null)) {
+        const remainingMinutes = Math.ceil(
+          (new Date(s.heldUntil!).getTime() - Date.now()) / (1000 * 60),
+        );
+        res.status(400).json({
+          message: `Slot ${s.startTime} is temporarily held by another customer. Available in ${remainingMinutes} minute(s).`,
+          availableAt: s.heldUntil,
+        });
+        return;
+      }
+      if (!s.isAvailable) {
+        res
+          .status(400)
+          .json({ message: `Slot ${s.startTime} is not available` });
+        return;
+      }
+    }
+
+    // Buffer slots: required only if they exist on the day. Buffer running past
+    // closing is allowed (nothing to block). If they exist, they must be free —
+    // EXCEPT that buffer overlapping any of MY own ranges is fine (my buffer is
+    // just "no other customer here" — my own follow-on doesn't need to wait).
+    const bufferEnd = Math.min(
+      slotIndex + durationSlots + bufferSlots,
+      timeSlotDoc.slots.length,
+    );
+    for (let i = slotIndex + durationSlots; i < bufferEnd; i++) {
+      const s = timeSlotDoc.slots[i];
+      if (myDurationIdx.has(i) || myBufferIdx.has(i)) continue;
+      if (s.isBooked) {
+        res.status(400).json({
+          message: `Buffer overlaps with an existing booking at ${s.startTime}`,
+        });
+        return;
+      }
+      if (s.isBlocked) {
+        res.status(400).json({
+          message: `Buffer overlaps with another reservation at ${s.startTime}`,
+        });
+        return;
+      }
+      if (isLiveHoldByOther(s, null)) {
+        res.status(400).json({
+          message: `Buffer overlaps with a temporary hold at ${s.startTime}`,
+        });
+        return;
+      }
+    }
+
     const HOLD_MINUTES = 3;
     const paymentExpiresAt = new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
+
+    const lastDurationSlot = timeSlotDoc.slots[slotIndex + durationSlots - 1];
+    const computedEndTime = lastDurationSlot.endTime;
 
     const booking = await BookingModel.create({
       customer: customerId,
       worker: workerId,
       services: formattedServices,
       date: utcBookingDate, // Store in UTC
-      startTime: slot.startTime,
-      endTime: slot.endTime,
+      startTime: timeSlotDoc.slots[slotIndex].startTime,
+      endTime: computedEndTime,
+      durationMinutes,
+      priceBreakdown: {
+        subtotal: breakdown.subtotal,
+        agencyFee: breakdown.agencyFee,
+        total: breakdown.total,
+      },
       status: "pending",
       isPayment: false,
       paymentExpiresAt,
     });
 
-    slot.isAvailable = false;
-    slot.heldBy = booking._id;
-    slot.heldUntil = paymentExpiresAt;
-
-    const prevSlot = timeSlotDoc.slots[slotIndex - 1];
-    const nextSlot = timeSlotDoc.slots[slotIndex + 1];
-
-    if (prevSlot) prevSlot.isBlocked = true;
-    if (nextSlot) nextSlot.isBlocked = true;
+    // Hold duration slots: isAvailable=false, heldBy/heldUntil = this booking.
+    // Buffer slots: same hold marker so cleanup/success can find them via heldBy.
+    for (let i = slotIndex; i < slotIndex + durationSlots; i++) {
+      const s = timeSlotDoc.slots[i];
+      s.isAvailable = false;
+      s.heldBy = booking._id as any;
+      s.heldUntil = paymentExpiresAt;
+    }
+    for (let i = slotIndex + durationSlots; i < bufferEnd; i++) {
+      const s = timeSlotDoc.slots[i];
+      s.isBlocked = true;
+      s.heldBy = booking._id as any;
+      s.heldUntil = paymentExpiresAt;
+    }
 
     await timeSlotDoc.save();
 
@@ -1295,12 +1556,14 @@ export const getWorkerBookings = async (req: any, res: Response) => {
       {},
     );
 
+    const projected = projectGroupedBookings(groupedByDate, "worker");
+
     res.status(200).json({
       message: "Worker bookings fetched successfully",
       month,
       year,
       timezone: clientTimezone,
-      data: groupedByDate,
+      data: projected,
       pagination: {
         total: total,
         page,
@@ -1664,12 +1927,14 @@ export const getCustomerBookings = async (req: any, res: Response) => {
       {},
     );
 
+    const projected = projectGroupedBookings(groupedByDate, "customer");
+
     res.status(200).json({
       message: "Customer bookings fetched successfully",
       month,
       year,
       timezone: clientTimezone,
-      data: groupedByDate,
+      data: projected,
       pagination: {
         total: total,
         page,
@@ -1962,7 +2227,8 @@ export const getAllBookings = async (req: Request, res: Response) => {
         };
       });
 
-      return bookingObj;
+      // Project for admin/manager so workerEarnings and adminEarnings are present.
+      return projectBookingForRole(bookingObj, "admin");
     });
 
     result.data = populatedData;
@@ -2001,10 +2267,14 @@ export const getAllTransactions = async (req: Request, res: Response) => {
       { path: "services.service", select: "serviceName price" },
     ]);
 
+    const projectedTransactions = populatedData.map((b: any) =>
+      projectBookingForRole(b, "admin"),
+    );
+
     res.status(200).json({
       message: "All Transactions fetched successfully",
       pagination: result.pagination,
-      transactions: populatedData,
+      transactions: projectedTransactions,
     });
   } catch (err: any) {
     res.status(500).json({

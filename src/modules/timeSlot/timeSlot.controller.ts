@@ -260,10 +260,17 @@ export const getAllWorkerAvailability = async (req: Request, res: Response) => {
 // -------------------------
 // Get One Worker's Availability
 // -------------------------
+// Supports an optional ?durationMinutes=N query param so the UI can ask "which
+// of these slots can actually fit a service of duration N?". When provided, each
+// slot gets a derived `feasibleStart` boolean reflecting whether a booking that
+// long (plus the 1-hour buffer) would fit starting at that slot.
+const SLOT_DURATION_MIN = 30;
+const BUFFER_MINUTES = 60;
+
 export const getWorkerAvailability = async (req: Request, res: Response) => {
   try {
     const { workerId } = req.params;
-    const { date } = req.query;
+    const { date, durationMinutes: durationMinutesRaw } = req.query;
     const clientTimezone = getClientTimezone(req);
 
     if (!date) {
@@ -271,7 +278,6 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
       return;
     }
 
-    // Convert client date to UTC
     const { startOfDay, endOfDay } = getDayBoundariesInUTC(
       date as string,
       clientTimezone,
@@ -288,12 +294,11 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
     ) {
       timeSlot = new TimeSlotModel({
         worker: workerId,
-        date: startOfDay, // Store in UTC
+        date: startOfDay,
         slots: generateDefaultSlots(),
       });
     }
 
-    // Get current time in client timezone
     const currentTime = getCurrentTimeInTimezone(clientTimezone);
     const requestedDate = new Date(date as string);
     const currentDate = new Date(currentTime.date);
@@ -304,13 +309,11 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
       requestedDate.getDate() === currentDate.getDate();
 
     if (isToday) {
-      // Parse current time in client timezone
       const [currentHour, currentMinute] = currentTime.time
         .split(":")
         .map(Number);
       const currentTimeInMinutes = currentHour * 60 + currentMinute;
 
-      // Filter out past slots
       const slotsToRemove = timeSlot.slots.filter((slot) => {
         const [h, m] = slot.startTime.split(":").map(Number);
         const slotStartMinutes = h * 60 + m;
@@ -324,9 +327,56 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
 
     await timeSlot.save();
 
-    // Add timezone info to response
     const timeSlotObj = timeSlot.toObject();
     const clientDateTime = convertFromUTC(timeSlot.date, clientTimezone);
+
+    // Feasibility annotation: if the caller passed a duration, compute whether
+    // each remaining slot can be the START of a booking of that length.
+    const durationMinutes = Number(durationMinutesRaw);
+    if (
+      Number.isFinite(durationMinutes) &&
+      durationMinutes >= SLOT_DURATION_MIN
+    ) {
+      const slotsArr = timeSlotObj.slots;
+      const durationSlots = Math.max(
+        1,
+        Math.ceil(durationMinutes / SLOT_DURATION_MIN),
+      );
+      const bufferSlots = Math.ceil(BUFFER_MINUTES / SLOT_DURATION_MIN);
+
+      const slotIsFree = (s: any) => {
+        if (s.isBooked) return false;
+        if (s.isBlocked) return false;
+        if (s.heldUntil && new Date() < new Date(s.heldUntil)) return false;
+        if (!s.isAvailable && !(s.heldUntil && new Date() >= new Date(s.heldUntil)))
+          return false;
+        return true;
+      };
+
+      timeSlotObj.slots = slotsArr.map((slot: any, idx: number) => {
+        // Need durationSlots consecutive slots starting here.
+        if (idx + durationSlots > slotsArr.length) {
+          return { ...slot, feasibleStart: false };
+        }
+        for (let i = idx; i < idx + durationSlots; i++) {
+          if (!slotIsFree(slotsArr[i])) {
+            return { ...slot, feasibleStart: false };
+          }
+        }
+        // Buffer slots only constrain feasibility if they exist on the day; if
+        // the buffer runs past closing, that's allowed (nothing to overlap).
+        const bufferEnd = Math.min(
+          idx + durationSlots + bufferSlots,
+          slotsArr.length,
+        );
+        for (let i = idx + durationSlots; i < bufferEnd; i++) {
+          if (!slotIsFree(slotsArr[i])) {
+            return { ...slot, feasibleStart: false };
+          }
+        }
+        return { ...slot, feasibleStart: true };
+      });
+    }
 
     res.status(200).json({
       message: "Worker availability fetched successfully",
@@ -334,6 +384,9 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
         ...timeSlotObj,
         displayDate: clientDateTime.date,
         timezone: clientTimezone,
+        durationMinutes: Number.isFinite(durationMinutes)
+          ? durationMinutes
+          : null,
       },
     });
   } catch (err: any) {

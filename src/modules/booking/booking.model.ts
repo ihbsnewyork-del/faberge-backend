@@ -5,6 +5,12 @@ export interface IBookingService {
   subcategories?: Types.ObjectId[];
 }
 
+export interface IPriceBreakdown {
+  subtotal: number;
+  agencyFee: number;
+  total: number;
+}
+
 export interface IBooking extends Document {
   customer: Types.ObjectId;
   worker: Types.ObjectId;
@@ -12,10 +18,12 @@ export interface IBooking extends Document {
   date: Date;
   startTime: string;
   endTime: string;
+  durationMinutes: number;
   status: "booked" | "completed" | "cancelled" | "expired" | "pending";
   isPayment: { type: Boolean; default: false };
   transactionId: { type: String; default: null };
   paymentAmount: Number;
+  priceBreakdown: IPriceBreakdown;
   paymentExpiresAt: Date | null;
   isTransactionDeleted: boolean;
   isNotificationDeleted: boolean;
@@ -38,12 +46,18 @@ const bookingSchema = new Schema<IBooking>(
     date: { type: Date, required: true },
     startTime: { type: String, required: true },
     endTime: { type: String, required: true },
+    durationMinutes: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ["booked", "completed", "cancelled", "expired", "pending"],
       default: "pending",
     },
     paymentAmount: { type: Number, default: 0 },
+    priceBreakdown: {
+      subtotal: { type: Number, default: 0 },
+      agencyFee: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+    },
     isPayment: { type: Boolean, default: false },
     transactionId: { type: String, default: null },
     paymentExpiresAt: { type: Date, default: null },
