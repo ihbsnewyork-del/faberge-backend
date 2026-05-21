@@ -349,7 +349,14 @@ export const getWorkerDashboardStats = async (req: any, res: Response) => {
         $group: {
           _id: null,
           totalHours: { $sum: "$hoursBooked" },
-          totalEarnings: { $sum: "$paymentAmount" },
+          // Worker earnings = subtotal of services only.
+          // priceBreakdown.subtotal excludes agency fee + tax (those belong to admin).
+          // Fallback to legacy bookings without a stored breakdown.
+          totalEarnings: {
+            $sum: {
+              $ifNull: ["$priceBreakdown.subtotal", "$paymentAmount"],
+            },
+          },
         },
       },
     ];

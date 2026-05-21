@@ -9,6 +9,8 @@ export interface ISubcategory {
 export interface IService extends Document {
   serviceName: string;
   price: number;
+  agencyFee: number;
+  serviceDuration: number;
   subcategory?: ISubcategory[];
 }
 
@@ -21,6 +23,18 @@ const serviceSchema = new Schema<IService>(
   {
     serviceName: { type: String, required: true },
     price: { type: Number, required: true },
+    agencyFee: { type: Number, required: true, default: 0, min: 0 },
+    serviceDuration: {
+      type: Number,
+      required: true,
+      default: 60,
+      min: 30,
+      max: 480,
+      validate: {
+        validator: (v: number) => v % 30 === 0,
+        message: "serviceDuration must be a multiple of 30 minutes",
+      },
+    },
     subcategory: { type: [subcategorySchema], required: false },
   },
   { timestamps: true }
