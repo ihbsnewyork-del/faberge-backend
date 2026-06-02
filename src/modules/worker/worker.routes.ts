@@ -15,15 +15,16 @@ import { authenticateWorker } from "../../middlewares/workerMiddleware";
 
 const workerRouter = express.Router();
 
+// Only admins may create or update worker profiles (incl. profile photo).
 workerRouter.post(
   "/register",
-  authenticateAdminOrManager,
+  authenticateAdmin,
   photoUpload.single("workerProfileImage"),
   registerWorker
 );
 workerRouter.patch(
   "/update-worker/:id",
-  authenticateAdminOrManager,
+  authenticateAdmin,
   photoUpload.single("workerProfileImage"),
   updateWorker
 );

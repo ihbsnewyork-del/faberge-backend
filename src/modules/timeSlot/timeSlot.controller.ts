@@ -327,7 +327,7 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
 
     await timeSlot.save();
 
-    const timeSlotObj = timeSlot.toObject();
+    const timeSlotObj: any = timeSlot.toObject();
     const clientDateTime = convertFromUTC(timeSlot.date, clientTimezone);
 
     // Feasibility annotation: if the caller passed a duration, compute whether

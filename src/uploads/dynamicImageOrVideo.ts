@@ -19,10 +19,16 @@ const storage = multer.diskStorage({
 });
 
 export const mediaUpload = multer({
+  // Home banner accepts both images and videos, so allow up to 50MB
+  // (matches the dashboard's client-side limit in HomeBanner.jsx).
+  limits: { fileSize: 50 * 1024 * 1024 },
   storage,
   fileFilter: function (req, file, cb) {
-    if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Only image files are allowed"));
+    if (
+      !file.mimetype.startsWith("image/") &&
+      !file.mimetype.startsWith("video/")
+    ) {
+      return cb(new Error("Only image or video files are allowed"));
     }
     cb(null, true);
   },
