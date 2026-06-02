@@ -15,8 +15,8 @@ const uploadPhotoRouter = express.Router();
 
 uploadPhotoRouter.post(
   "/create-dynamic-photo-or-video",
-  mediaUpload.single("dynamicUpload"),
   authenticateAdminOrManager,
+  mediaUpload.single("dynamicUpload"),
   createUploadPhoto
 );
 
