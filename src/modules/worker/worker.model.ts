@@ -14,6 +14,7 @@ export interface IWorker extends Document {
   password: string;
   workerId: string;
   uploadPhoto: string | null;
+  photos: string[];
   resetOtp?: number | null;
   otpExpires?: Date | null;
   otpVerified?: boolean;
@@ -38,6 +39,8 @@ const workerSchema = new Schema<IWorker>(
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     uploadPhoto: { type: String, default: null },
+    // Gallery photos shown on the public website (max 10, enforced in controller).
+    photos: { type: [String], default: [] },
     isBlocked: { type: Boolean, default: false },
     zipCode: { type: String, required: true },
     workerId: { type: String },
