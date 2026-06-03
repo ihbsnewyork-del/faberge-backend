@@ -14,6 +14,7 @@ export const workerProfileSchema = z.object({
   title: z.string().optional(),
   zipCode: z.string().min(1, "Zip code is required"),
   isBlocked: z.boolean().optional(),
+  photos: z.array(z.string()).max(10, "Maximum 10 photos allowed").optional(),
   services: z.array(
     z.object({
       service: z.string().min(1, "Service ID is required"),
