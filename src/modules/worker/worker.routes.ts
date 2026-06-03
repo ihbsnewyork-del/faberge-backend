@@ -15,17 +15,23 @@ import { authenticateWorker } from "../../middlewares/workerMiddleware";
 
 const workerRouter = express.Router();
 
-// Only admins may create or update worker profiles (incl. profile photo).
+// Only admins may create or update worker profiles (incl. profile photo +
+// up to 10 gallery photos shown on the public website).
+const workerPhotoFields = photoUpload.fields([
+  { name: "workerProfileImage", maxCount: 1 },
+  { name: "workerPhotos", maxCount: 10 },
+]);
+
 workerRouter.post(
   "/register",
   authenticateAdmin,
-  photoUpload.single("workerProfileImage"),
+  workerPhotoFields,
   registerWorker
 );
 workerRouter.patch(
   "/update-worker/:id",
   authenticateAdmin,
-  photoUpload.single("workerProfileImage"),
+  workerPhotoFields,
   updateWorker
 );
 workerRouter.get("/get-one-worker/:id", getOneWorker);

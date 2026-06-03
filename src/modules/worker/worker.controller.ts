@@ -17,11 +17,21 @@ import { getClientTimezone } from "../booking/booking.controller";
 // --------------------
 export const registerWorker = async (req: Request, res: Response) => {
   try {
+    // With multer .fields(), uploads arrive on req.files keyed by field name.
+    const files = req.files as
+      | { [fieldname: string]: Express.Multer.File[] }
+      | undefined;
+    const profileFile = files?.workerProfileImage?.[0];
+    const galleryFiles = files?.workerPhotos || [];
+
     const data = {
       ...req.body,
-      uploadPhoto: req.file
-        ? `/picture/profile_image/${req.file.filename}`
+      uploadPhoto: profileFile
+        ? `/picture/profile_image/${profileFile.filename}`
         : undefined,
+      photos: galleryFiles
+        .slice(0, 10)
+        .map((f) => `/picture/profile_image/${f.filename}`),
     };
 
     if (typeof data.services === "string") {
@@ -81,10 +91,17 @@ export const updateWorker = async (req: Request, res: Response) => {
       return;
     }
 
+    // With multer .fields(), uploads arrive on req.files keyed by field name.
+    const files = req.files as
+      | { [fieldname: string]: Express.Multer.File[] }
+      | undefined;
+    const profileFile = files?.workerProfileImage?.[0];
+    const galleryFiles = files?.workerPhotos || [];
+
     const data = {
       ...req.body,
-      uploadPhoto: req.file
-        ? `/picture/profile_image/${req.file.filename}`
+      uploadPhoto: profileFile
+        ? `/picture/profile_image/${profileFile.filename}`
         : worker.uploadPhoto,
     };
 
@@ -96,6 +113,32 @@ export const updateWorker = async (req: Request, res: Response) => {
         return;
       }
     }
+
+    // Gallery photos: the client sends `existingPhotos` (JSON array of paths to
+    // keep) and uploads any new files under `workerPhotos`. Final set = kept +
+    // newly uploaded, capped at 10. If the client omits existingPhotos entirely,
+    // fall back to whatever the worker already has.
+    let keptPhotos: string[] = worker.photos || [];
+    if (typeof data.existingPhotos === "string") {
+      try {
+        const parsed = JSON.parse(data.existingPhotos);
+        if (Array.isArray(parsed)) {
+          keptPhotos = parsed.filter((p): p is string => typeof p === "string");
+        }
+      } catch {
+        // Ignore malformed value and keep current photos.
+      }
+    } else if (Array.isArray(data.existingPhotos)) {
+      keptPhotos = data.existingPhotos.filter(
+        (p: unknown): p is string => typeof p === "string",
+      );
+    }
+    delete data.existingPhotos;
+
+    const newPhotos = galleryFiles.map(
+      (f) => `/picture/profile_image/${f.filename}`,
+    );
+    data.photos = [...keptPhotos, ...newPhotos].slice(0, 10);
 
     const password = data.password;
     if (password) {
