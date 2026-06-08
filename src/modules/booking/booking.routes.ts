@@ -15,6 +15,7 @@ import {
   getWorkerPopularity,
   handleStripeWebhook,
   initializePayment,
+  releasePendingBooking,
   updateBookingStatus,
 } from "./booking.controller";
 import { authenticateCustomer } from "../../middlewares/customerMiddleware";
@@ -26,6 +27,12 @@ const bookingRouter = express.Router();
 const payment = express.Router();
 
 bookingRouter.post("/book-slot", authenticateCustomer, bookTimeSlot);
+// Customer abandoned the payment screen — free the held slot right away.
+bookingRouter.post(
+  "/release-slot",
+  authenticateCustomer,
+  releasePendingBooking
+);
 bookingRouter.post(
   "/initialize-payment",
   authenticateCustomer,

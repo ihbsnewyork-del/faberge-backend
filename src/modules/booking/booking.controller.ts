@@ -1456,6 +1456,106 @@ export const bookTimeSlot = async (req: any, res: Response) => {
 };
 
 // --------------------
+// Release a Pending Booking's Held Slots Immediately
+// --------------------
+// Called when the customer reaches the payment screen but decides NOT to pay and
+// closes it. Instead of waiting for the 3-minute hold to expire (cleanupExpiredBookings),
+// we free the slots right away so the time becomes selectable again immediately.
+//
+// Safe by design:
+//   - only the customer who owns the booking can release it
+//   - only PENDING, UNPAID bookings are released (a paid/booked one is left alone,
+//     so a race with the Stripe webhook can never cancel a real booking)
+//   - idempotent: re-releasing an already-cancelled/expired booking just succeeds
+export const releasePendingBooking = async (req: any, res: Response) => {
+  try {
+    const customerId = req.user.userId;
+    const bookingId = req.params.bookingId || req.body.bookingId;
+
+    if (!bookingId) {
+      res.status(400).json({ message: "bookingId is required" });
+      return;
+    }
+
+    const booking = await BookingModel.findById(bookingId);
+    if (!booking) {
+      res.status(404).json({ message: "Booking not found" });
+      return;
+    }
+
+    // Ownership check — a customer may only release their own held slot.
+    if (booking.customer.toString() !== customerId.toString()) {
+      res
+        .status(403)
+        .json({ message: "You are not allowed to release this booking" });
+      return;
+    }
+
+    // Never touch a booking that's already paid/confirmed. If payment landed
+    // (status "booked"/isPayment) the slot is legitimately taken.
+    if (booking.isPayment || booking.status === "booked") {
+      res
+        .status(400)
+        .json({ message: "Booking is already paid and cannot be released" });
+      return;
+    }
+
+    // Already released/expired — nothing to do, respond success (idempotent).
+    if (booking.status !== "pending") {
+      res
+        .status(200)
+        .json({ message: "Booking already released", data: booking });
+      return;
+    }
+
+    booking.status = "cancelled";
+    booking.paymentExpiresAt = null;
+    await booking.save();
+
+    // Release every slot tagged with this booking — duration AND buffer slots —
+    // back to a fully-available state.
+    const timeSlotDoc = await TimeSlotModel.findOne({
+      worker: booking.worker,
+      date: booking.date,
+    });
+
+    let released = 0;
+    if (timeSlotDoc) {
+      const bookingIdStr = (booking._id as any).toString();
+      for (const slot of timeSlotDoc.slots) {
+        if (slot.heldBy && slot.heldBy.toString() === bookingIdStr) {
+          slot.isAvailable = true;
+          slot.isBooked = false;
+          slot.isBlocked = false;
+          slot.heldBy = null;
+          slot.heldUntil = null;
+          released++;
+        }
+      }
+      if (released > 0) {
+        await timeSlotDoc.save();
+      }
+    }
+
+    console.log(
+      `✅ Released ${released} slot(s) immediately for abandoned booking: ${booking._id}`,
+    );
+
+    res.status(200).json({
+      message: "Slot released successfully",
+      data: booking,
+      releasedSlots: released,
+    });
+  } catch (err: any) {
+    console.error("Error releasing pending booking:", err);
+    res.status(500).json({
+      message: "Error releasing slot",
+      error: err.message,
+    });
+  }
+};
+
+// --------------------
 // Get One Worker Bookings Information
 // --------------------
 export const getWorkerBookings = async (req: any, res: Response) => {
