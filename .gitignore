@@ -7,3 +7,12 @@ key.pem
 faberge.pem
 dist/
 .gitignore
+node_modules/
+picture/
+
+cert.pem
+key.pem
+faberge.pem
+dist/
+.gitignore
+config.bat
