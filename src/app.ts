@@ -16,6 +16,7 @@ import accessibilityRouter from "./modules/accessibility/accessibility.routes";
 import timeSlotRouter from "./modules/timeSlot/timeSlot.routes";
 import bookingRouter, { payment } from "./modules/booking/booking.routes";
 import uploadPhotoRouter from "./modules/uploadPhoto/uploadPhoto.routes";
+import subscriberRouter from "./modules/subscriber/subscriber.routes";
 import { handleStripeWebhook } from "./modules/booking/booking.controller";
 
 const app = express();
@@ -59,6 +60,7 @@ app.use("/accessibility", accessibilityRouter);
 app.use("/time-slot", timeSlotRouter);
 app.use("/booking", bookingRouter);
 app.use("/photo", uploadPhotoRouter);
+app.use("/subscriber", subscriberRouter);
 app.use("/contact-us", payment);
 
 // common api

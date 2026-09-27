@@ -125,14 +125,14 @@ export const hasBookingEnded = (
  * @param clientTimezone - Client's timezone
  * @param startHour - Start hour (default 9)
  * @param endHour - End hour (default 19)
- * @param intervalMinutes - Slot interval (default 30)
+ * @param intervalMinutes - Slot interval (default 15)
  * @returns Array of time slots
  */
 export const generateTimeSlotsForTimezone = (
   clientTimezone: string,
   startHour: number = 9,
   endHour: number = 19,
-  intervalMinutes: number = 30,
+  intervalMinutes: number = 15,
 ): Array<{ startTime: string; endTime: string }> => {
   const slots = [];
   let hour = startHour;

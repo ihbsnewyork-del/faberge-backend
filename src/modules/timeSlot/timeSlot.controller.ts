@@ -7,6 +7,47 @@ import {
   convertFromUTC,
 } from "../../helper/timezoneHelper";
 
+// Slots are 15-minute chunks from 09:00 to 19:00; customers can start a booking
+// at any quarter hour.
+export const SLOT_DURATION_MIN = 15;
+
+const hhmmToMinutes = (hhmm: string): number => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+};
+
+const minutesToHHMMStr = (mins: number): string =>
+  `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+
+// Days saved before the switch to 15-minute slots hold 30-minute slots. Split any
+// slot longer than SLOT_DURATION_MIN into 15-minute pieces that inherit its state
+// (booked / blocked / unavailable / held), so existing bookings and worker
+// unavailability carry over. Returns true if the document was changed.
+export const normalizeSlots = (timeSlotDoc: any): boolean => {
+  if (!timeSlotDoc?.slots?.length) return false;
+  const needsSplit = timeSlotDoc.slots.some(
+    (s: any) =>
+      hhmmToMinutes(s.endTime) - hhmmToMinutes(s.startTime) > SLOT_DURATION_MIN,
+  );
+  if (!needsSplit) return false;
+
+  const split: any[] = [];
+  for (const s of timeSlotDoc.slots) {
+    const { _id, startTime, endTime, ...state } =
+      typeof s.toObject === "function" ? s.toObject() : s;
+    const end = hhmmToMinutes(endTime);
+    for (let m = hhmmToMinutes(startTime); m < end; m += SLOT_DURATION_MIN) {
+      split.push({
+        ...state,
+        startTime: minutesToHHMMStr(m),
+        endTime: minutesToHHMMStr(Math.min(m + SLOT_DURATION_MIN, end)),
+      });
+    }
+  }
+  timeSlotDoc.set("slots", split);
+  return true;
+};
+
 function generateDefaultSlots() {
   const slots = [];
   let hour = 9;
@@ -18,7 +59,7 @@ function generateDefaultSlots() {
       .padStart(2, "0")}`;
 
     let nextHour = hour;
-    let nextMinute = minute + 30;
+    let nextMinute = minute + SLOT_DURATION_MIN;
 
     if (nextMinute >= 60) {
       nextHour += 1;
@@ -98,6 +139,7 @@ export const setWorkerUnAvailability = async (req: any, res: Response) => {
         slots: generateDefaultSlots(),
       });
     }
+    normalizeSlots(timeSlot);
 
     timeSlot.slots.forEach((slot) => {
       if (unavailableSlots.includes(slot.startTime)) {
@@ -264,7 +306,6 @@ export const getAllWorkerAvailability = async (req: Request, res: Response) => {
 // of these slots can actually fit a service of duration N?". When provided, each
 // slot gets a derived `feasibleStart` boolean reflecting whether a booking that
 // long (plus the 1-hour buffer) would fit starting at that slot.
-const SLOT_DURATION_MIN = 30;
 const BUFFER_MINUTES = 60;
 
 export const getWorkerAvailability = async (req: Request, res: Response) => {
@@ -298,6 +339,7 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
         slots: generateDefaultSlots(),
       });
     }
+    normalizeSlots(timeSlot);
 
     const currentTime = getCurrentTimeInTimezone(clientTimezone);
     const requestedDate = new Date(date as string);
@@ -335,7 +377,7 @@ export const getWorkerAvailability = async (req: Request, res: Response) => {
     const durationMinutes = Number(durationMinutesRaw);
     if (
       Number.isFinite(durationMinutes) &&
-      durationMinutes >= SLOT_DURATION_MIN
+      durationMinutes > 0
     ) {
       const slotsArr = timeSlotObj.slots;
       const durationSlots = Math.max(
