@@ -4,7 +4,10 @@ import { TimeSlotModel } from "../timeSlot/timeSlot.model";
 import { CustomerModel } from "../customer/customer.model";
 import { WorkerModel } from "../worker/worker.model";
 import { ServiceModel } from "../services/services.model";
-import generateDefaultSlots from "../timeSlot/timeSlot.controller";
+import generateDefaultSlots, {
+  normalizeSlots,
+  SLOT_DURATION_MIN,
+} from "../timeSlot/timeSlot.controller";
 import { paginate } from "../../helper/paginationHelper";
 import nodemailer from "nodemailer";
 
@@ -24,10 +27,10 @@ const roundMoney = (n: number) => Math.round(n * 100) / 100;
 // --------------------
 // Scheduling helpers
 // --------------------
-// Slots are fixed 30-minute chunks; a service may span multiple consecutive slots.
+// Slots are fixed 15-minute chunks; a service may span multiple consecutive slots.
 // Every booking also blocks an additional 1-hour buffer AFTER its end time so the
 // worker has travel/cleanup time between appointments.
-export const SLOT_DURATION_MIN = 30;
+export { SLOT_DURATION_MIN };
 export const BUFFER_MINUTES = 60;
 
 export const toMinutes = (hhmm: string): number => {
@@ -41,7 +44,7 @@ export const minutesToHHMM = (mins: number): string => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 };
 
-// How many 30-min slots a given duration occupies (rounded up).
+// How many 15-min slots a given duration occupies (rounded up).
 export const durationToSlotCount = (durationMinutes: number): number =>
   Math.max(1, Math.ceil(durationMinutes / SLOT_DURATION_MIN));
 
@@ -82,7 +85,10 @@ const getCustomerOccupiedIndices = async (
   for (const b of myBookings) {
     const startIdx = slots.findIndex((s: any) => s.startTime === b.startTime);
     if (startIdx < 0) continue;
-    const dur = (b as any).durationMinutes || SLOT_DURATION_MIN;
+    const dur =
+      (b as any).durationMinutes ||
+      toMinutes(b.endTime) - toMinutes(b.startTime) ||
+      SLOT_DURATION_MIN;
     const durationSlots = durationToSlotCount(dur);
 
     for (
@@ -1277,6 +1283,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
       res.status(400).json({ message: "Worker is off on this day" });
       return;
     }
+    normalizeSlots(timeSlotDoc);
 
     const convertedStartTime = convertTo24Hour(startTime);
 
@@ -1299,7 +1306,7 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     const breakdown = await computeBookingBreakdown(formattedServices as any);
     const durationMinutes = breakdown.durationMinutes || SLOT_DURATION_MIN;
 
-    // Slot range math: how many 30-min slots the service occupies + buffer slots.
+    // Slot range math: how many 15-min slots the service occupies + buffer slots.
     const durationSlots = durationToSlotCount(durationMinutes);
     const bufferSlots = durationToSlotCount(BUFFER_MINUTES);
 
@@ -1399,8 +1406,10 @@ export const bookTimeSlot = async (req: any, res: Response) => {
     const HOLD_MINUTES = 3;
     const paymentExpiresAt = new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
 
-    const lastDurationSlot = timeSlotDoc.slots[slotIndex + durationSlots - 1];
-    const computedEndTime = lastDurationSlot.endTime;
+    // Real end = start + service duration.
+    const computedEndTime = minutesToHHMM(
+      toMinutes(timeSlotDoc.slots[slotIndex].startTime) + durationMinutes,
+    );
 
     const booking = await BookingModel.create({
       customer: customerId,

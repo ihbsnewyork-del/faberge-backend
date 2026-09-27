@@ -7,10 +7,10 @@ export const subcategorySchema = z.object({
 
 const serviceDurationSchema = z
   .number()
-  .min(30, "Duration must be at least 30 minutes")
+  .min(15, "Duration must be at least 15 minutes")
   .max(480, "Duration cannot exceed 8 hours (480 minutes)")
-  .refine((v) => v % 30 === 0, {
-    message: "Duration must be in 30-minute increments",
+  .refine((v) => v % 15 === 0, {
+    message: "Duration must be in 15-minute increments",
   });
 
 export const createServiceValidation = z.object({
